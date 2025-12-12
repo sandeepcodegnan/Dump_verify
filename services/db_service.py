@@ -15,35 +15,83 @@ class DatabaseService:
         collection = get_collection(f"{subject}_mcq")
         skip = (page - 1) * size
         
-        # Show questions not yet processed (check nested audit_collection)
-        audit_collection = get_collection("audit_collection")
-        subject_code = list(SUBJECTS.keys())[list(SUBJECTS.values()).index(subject)]
-        
-        # Get processed question IDs from nested structure
-        processed_qids = []
-        for intern_doc in audit_collection.find({}, {"activities": 1}):
-            for activity in intern_doc.get("activities", []):
-                qid = activity.get("question_id", "")
-                if qid.startswith(f"{subject_code}M") and activity.get("action") in ["verified", "modified"]:
-                    processed_qids.append(qid)
-        
-        query = {"Q_id": {"$nin": processed_qids}} if processed_qids else {}
+        # Show only questions without Q_id (unverified)
+        query = {"Q_id": {"$exists": False}}
         if filters:
             if filters.get('search'):
                 query['Question'] = {'$regex': filters['search'], '$options': 'i'}
+            if filters.get('day_tag'):
+                query['Tags'] = {'$regex': f"^{filters['day_tag']}", '$options': 'i'}
         
-        questions = list(collection.find(query).skip(skip).limit(size))
+        # Sort by Tags to maintain day order (day-1:1, day-1:2, etc.)
+        questions = list(collection.find(query).sort("Tags", 1).skip(skip).limit(size))
         total = collection.count_documents(query)
-        
-        # Debug: Check total vs all documents
-        all_docs = collection.count_documents({})
-        print(f"DEBUG: Subject {subject} - Total docs: {all_docs}, Unverified: {total}")
         
         return {
             'questions': questions,
             'total': total,
             'page': page,
             'total_pages': (total + size - 1) // size
+        }
+    
+    def get_day_questions(self, subject, day_number):
+        """Get questions for a specific day (e.g., day-1)."""
+        collection = get_collection(f"{subject}_mcq")
+        
+        # Query for specific day tag pattern
+        query = {
+            "Q_id": {"$exists": False},
+            "Tags": {"$regex": f"^day-{day_number}:", "$options": "i"}
+        }
+        
+        # Sort by tag to maintain order (day-1:1, day-1:2, etc.)
+        questions = list(collection.find(query).sort("Tags", 1))
+        
+        return questions
+    
+    def get_available_days(self, subject):
+        """Get list of available days for a subject."""
+        collection = get_collection(f"{subject}_mcq")
+        
+        # Get distinct day tags
+        pipeline = [
+            {"$match": {"Q_id": {"$exists": False}, "Tags": {"$exists": True}}},
+            {"$project": {
+                "day": {"$arrayElemAt": [{"$split": ["$Tags", ":"]}, 0]}
+            }},
+            {"$group": {"_id": "$day"}}
+        ]
+        
+        days = [doc["_id"] for doc in collection.aggregate(pipeline) if doc["_id"]]
+        
+        # Sort days numerically
+        def extract_day_number(day_str):
+            try:
+                return int(day_str.replace('day-', '').replace('Day-', ''))
+            except:
+                return 999
+        
+        return sorted(days, key=extract_day_number)
+    
+    def get_day_stats(self, subject, day_number):
+        """Get statistics for a specific day."""
+        collection = get_collection(f"{subject}_mcq")
+        
+        # Total questions for the day
+        total_query = {"Tags": {"$regex": f"^day-{day_number}:", "$options": "i"}}
+        total = collection.count_documents(total_query)
+        
+        # Verified questions for the day
+        verified_query = {
+            "Tags": {"$regex": f"^day-{day_number}:", "$options": "i"},
+            "Q_id": {"$exists": True}
+        }
+        verified = collection.count_documents(verified_query)
+        
+        return {
+            "total": total,
+            "verified": verified,
+            "remaining": total - verified
         }
     
     def generate_qid(self, subject_code, type_code):
@@ -66,7 +114,7 @@ class DatabaseService:
         return f"{prefix}{next_number:03d}"
     
     def verify_question(self, question_id, intern_id, action="verified", changes=None):
-        """Verify and migrate MCQ question to verified collection."""
+        """Verify MCQ question by adding Q_id to existing collection."""
         from bson import ObjectId
         
         # Find original question in MCQ collections only
@@ -75,36 +123,27 @@ class DatabaseService:
             question = source_collection.find_one({"_id": ObjectId(question_id)})
             
             if question:
+                # Check if already verified (has Q_id)
+                if question.get("Q_id"):
+                    print(f"Question already verified: {question.get('Q_id')}")
+                    return False
+                
                 # Generate Q_id (e.g., PYM001)
                 q_id = self.generate_qid(subject_key, "M")
                 
-                # Update question data
-                question["Q_id"] = q_id
-                
+                # Update the existing document with Q_id
+                update_data = {"Q_id": q_id}
                 if changes:
-                    question.update(changes)
+                    update_data.update(changes)
                 
-                # Move to verified collection (e.g., py_mcq_verified)
-                verified_collection_name = f"{subject_key.lower()}_mcq_verified"
-                verified_collection = get_collection(verified_collection_name)
-                
-                # Check if question already exists in verified collection
-                existing = verified_collection.find_one({"questionId": question.get("questionId")})
-                if existing:
-                    print(f"Question already verified: {question.get('questionId')}")
-                    return False
-                
-                # Remove _id to avoid duplicate key error, let MongoDB generate new one
-                if "_id" in question:
-                    del question["_id"]
-                
-                # Insert to verified collection (copy only, keep source as reference)
-                verified_collection.insert_one(question)
+                # Update the question in the same collection
+                source_collection.update_one(
+                    {"_id": ObjectId(question_id)},
+                    {"$set": update_data}
+                )
                 
                 # Log audit
                 self._log_audit(q_id, intern_id, action, changes)
-                
-
                 
                 return True
         return False
@@ -158,9 +197,8 @@ class DatabaseService:
     def get_verified_count(self, subject):
         """Get verified questions count for a subject."""
         try:
-            subject_code = next((k for k, v in SUBJECTS.items() if v == subject), "xx")
-            collection = get_collection(f"{subject_code.lower()}_mcq_verified")
-            return collection.count_documents({})
+            collection = get_collection(f"{subject}_mcq")
+            return collection.count_documents({"Q_id": {"$exists": True}})
         except:
             return 0
     
@@ -219,19 +257,17 @@ class DatabaseService:
     
     def get_overall_completion_rate(self):
         """Calculate overall completion rate across all subjects."""
-        # Get total questions across all subjects
         total_questions = 0
-        for subject in SUBJECTS.values():
-            total_questions += self.get_subject_question_count(subject)
-        
-        # Get total verified questions from audit
-        audit_collection = get_collection("audit_collection")
         verified_count = 0
         
-        for intern_doc in audit_collection.find({}, {"activities": 1}):
-            for activity in intern_doc.get("activities", []):
-                if activity.get("action") in ["verified", "modified"]:
-                    verified_count += 1
+        # Count from each subject's MCQ collection
+        for subject in SUBJECTS.values():
+            try:
+                collection = get_collection(f"{subject}_mcq")
+                total_questions += collection.count_documents({})
+                verified_count += collection.count_documents({"Q_id": {"$exists": True}})
+            except:
+                continue
         
         return (verified_count / total_questions * 100) if total_questions > 0 else 0.0
     
@@ -351,38 +387,24 @@ class DatabaseService:
     def get_first_unverified_question_index(self, subject):
         """Find the index of first unverified question."""
         collection = get_collection(f"{subject}_mcq")
-        audit_collection = get_collection("audit_collection")
-        subject_code = list(SUBJECTS.keys())[list(SUBJECTS.values()).index(subject)]
         
-        # Get processed question IDs from nested structure
-        processed_qids = []
-        for intern_doc in audit_collection.find({}, {"activities": 1}):
-            for activity in intern_doc.get("activities", []):
-                qid = activity.get("question_id", "")
-                if qid.startswith(f"{subject_code}M") and activity.get("action") in ["verified", "modified"]:
-                    processed_qids.append(qid)
-        
-        # Count verified questions to find first unverified index
-        verified_count = len(processed_qids)
+        # Count verified questions (those with Q_id)
+        verified_count = collection.count_documents({"Q_id": {"$exists": True}})
         return verified_count + 1  # Start from next unverified question
     
     def is_question_verified(self, question_id, subject):
-        """Check if a question is already verified by checking if its questionId exists in verified collection."""
+        """Check if a question is already verified by checking if it has Q_id."""
         from bson import ObjectId
         
-        # Get the question from source collection to get its questionId
+        # Get the question from source collection
         source_collection = get_collection(f"{subject}_mcq")
         question = source_collection.find_one({"_id": ObjectId(question_id)})
         
-        if not question or not question.get("questionId"):
+        if not question:
             return False
         
-        # Check if questionId exists in verified collection
-        subject_code = list(SUBJECTS.keys())[list(SUBJECTS.values()).index(subject)]
-        verified_collection = get_collection(f"{subject_code.lower()}_mcq_verified")
-        
-        existing = verified_collection.find_one({"questionId": question["questionId"]})
-        return existing is not None
+        # Check if question has Q_id (verified)
+        return question.get("Q_id") is not None
     
     def get_question_batch(self, subject, batch_size=10):
         """Get batch of questions for bulk verification."""
@@ -424,21 +446,17 @@ class DatabaseService:
     
     def get_verified_subjects(self):
         """Get all verified subjects with counts from database."""
-        db = get_collection("users").database  # Get database reference
-        collections = db.list_collection_names()
-        
         subjects = {}
-        for collection_name in collections:
-            if collection_name.endswith('_verified'):
-                # Extract subject from collection name (e.g., py_mcq_verified -> python)
-                parts = collection_name.replace('_verified', '').split('_')
-                if len(parts) >= 2:
-                    subject_code = parts[0].upper()
-                    # Find full subject name
-                    subject = next((v for k, v in SUBJECTS.items() if k == subject_code), parts[0])
-                    count = db[collection_name].count_documents({})
-                    if count > 0:
-                        subjects[subject] = count
+        
+        # Check each subject's MCQ collection for verified questions (those with Q_id)
+        for subject in SUBJECTS.values():
+            try:
+                collection = get_collection(f"{subject}_mcq")
+                count = collection.count_documents({"Q_id": {"$exists": True}})
+                if count > 0:
+                    subjects[subject] = count
+            except:
+                continue
         
         return subjects
     

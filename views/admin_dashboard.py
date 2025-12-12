@@ -70,11 +70,10 @@ def show_analytics_section(db_service):
         
         # Get actual subjects from database
         available_subjects = db_service.get_available_subjects()
-        verified_subjects = db_service.get_verified_subjects()
         
         if available_subjects:
             for subject, total in available_subjects.items():
-                verified = verified_subjects.get(subject, 0)
+                verified = db_service.get_verified_count(subject)
                 progress = (verified / total * 100) if total > 0 else 0
                 st.progress(progress / 100, text=f"{subject.title()}: {progress:.1f}%")
         else:
@@ -331,10 +330,15 @@ def show_collections_overview(db_service):
     
     with col2:
         st.markdown("**Verified Collections**")
-        if verified_subjects:
-            for subject, count in verified_subjects.items():
-                st.write(f"• **{subject.title()}**: {count:,} verified")
-        else:
+        verified_found = False
+        if available_subjects:
+            for subject in available_subjects.keys():
+                verified_count = db_service.get_verified_count(subject)
+                if verified_count > 0:
+                    st.write(f"• **{subject.title()}**: {verified_count:,} verified")
+                    verified_found = True
+        
+        if not verified_found:
             st.info("No verified collections found")
     
 

@@ -112,11 +112,11 @@ def show_subject_metrics(db_service, intern_id, subject):
     
     with col1:
         if st.button(f"✏️ Start Verification", key=f"start_{subject}", type="primary", use_container_width=True):
-            # Find first unverified question
-            first_unverified = db_service.get_first_unverified_question_index(subject)
             st.session_state['verification_mode'] = True
             st.session_state['current_subject'] = subject
-            st.session_state[f"{subject}_page"] = first_unverified
+            # Reset day selection to show day picker
+            if 'selected_day' in st.session_state:
+                del st.session_state['selected_day']
             if 'view_mode' in st.session_state:
                 del st.session_state['view_mode']
             st.rerun()
@@ -126,10 +126,13 @@ def show_subject_metrics(db_service, intern_id, subject):
             st.session_state['verification_mode'] = True
             st.session_state['view_mode'] = True
             st.session_state['current_subject'] = subject
+            # Reset day selection to show day picker
+            if 'selected_day' in st.session_state:
+                del st.session_state['selected_day']
             st.rerun()
 
 def show_verification_page(db_service, user, auth_service):
-    """Display verification page."""
+    """Display verification page with day-based organization."""
     subject = st.session_state.get('current_subject')
     
     if not subject:
@@ -160,43 +163,109 @@ def show_verification_page(db_service, user, auth_service):
     
     st.divider()
     
-    # Show appropriate interface
-    if st.session_state.get('view_mode', False):
-        show_all_questions_list(db_service, subject)
+    # Show day selection interface
+    if not st.session_state.get('selected_day'):
+        show_day_selection(db_service, subject)
     else:
-        show_verification_interface(db_service, user['user_id'], subject)
+        # Show appropriate interface based on mode
+        if st.session_state.get('view_mode', False):
+            show_day_questions_list(db_service, subject)
+        else:
+            show_day_verification_interface(db_service, user['user_id'], subject)
 
-def show_verification_interface(db_service, intern_id, subject):
-    """Display the edit and verification interface for questions."""
+def show_day_selection(db_service, subject):
+    """Show available days for the subject."""
+    st.markdown("### 📅 Select Day to Verify")
+    
+    # Get available days
+    days = db_service.get_available_days(subject)
+    
+    if not days:
+        st.info("No unverified questions found for this subject.")
+        return
+    
+    # Display days in a grid
+    cols = st.columns(min(len(days), 4))
+    
+    for i, day in enumerate(days):
+        with cols[i % 4]:
+            # Get day stats
+            day_num = day.replace('day-', '')
+            stats = db_service.get_day_stats(subject, day_num)
+            
+            # Create day card
+            st.markdown(f"**{day.title()}**")
+            st.write(f"📝 Total: {stats['total']}")
+            st.write(f"✅ Verified: {stats['verified']}")
+            st.write(f"⏳ Remaining: {stats['remaining']}")
+            
+            if stats['remaining'] > 0:
+                if st.button(f"Start {day}", key=f"start_{day}", use_container_width=True):
+                    st.session_state['selected_day'] = day_num
+                    # Clear any existing page state for this day
+                    page_key = f"{subject}_day_{day_num}_page"
+                    st.session_state[page_key] = 1
+                    st.rerun()
+            else:
+                st.success("✅ Complete")
+
+def show_day_verification_interface(db_service, intern_id, subject):
+    """Display the edit and verification interface for day questions."""
     from components.question_editor import QuestionEditor
     
-    # Initialize pagination
-    session_key = f"{subject}_page"
+    selected_day = st.session_state.get('selected_day')
+    if not selected_day:
+        return
+    
+    # Day header with back button
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.markdown(f"### 📅 Day-{selected_day} Questions")
+    with col2:
+        if st.button("🔙 Back to Days"):
+            if 'selected_day' in st.session_state:
+                del st.session_state['selected_day']
+            st.rerun()
+    
+    # Get day questions
+    questions = db_service.get_day_questions(subject, selected_day)
+    
+    if not questions:
+        st.success(f"🎉 All Day-{selected_day} questions completed!")
+        return
+    
+    # Initialize pagination for this day
+    session_key = f"{subject}_day_{selected_day}_page"
     if session_key not in st.session_state:
         st.session_state[session_key] = 1
     
-    # Get questions
-    result = db_service.get_paginated_questions(
-        subject, 
-        page=st.session_state[session_key],
-        size=1
-    )
+    # Get current question
+    current_index = st.session_state[session_key] - 1
+    if current_index >= len(questions):
+        st.session_state[session_key] = 1
+        current_index = 0
     
-    if not result['questions']:
-        st.success("🎉 All questions completed for this subject!")
-        if st.button("🔙 Back to Subject"):
-            st.session_state[f'verify_mode_{subject}'] = False
-            st.rerun()
-        return
+    question = questions[current_index]
     
-    question = result['questions'][0]
     editor = QuestionEditor()
     
-    # Question header
-    col1, col2 = st.columns([3, 1])
+    # Question header with day info
+    col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
-        st.info(f"📝 Question {st.session_state[session_key]} of {result['total']}")
+        tag = question.get('Tags', 'No tag')
+        difficulty = question.get('Difficulty', 'Unknown')
+        st.info(f"📝 Question {current_index + 1} of {len(questions)} | {tag} | 🎯 {difficulty}")
     with col2:
+        # Show difficulty badge
+        if difficulty == 'Easy':
+            st.success(f"🟢 {difficulty}")
+        elif difficulty == 'Medium':
+            st.warning(f"🟡 {difficulty}")
+        elif difficulty == 'Hard':
+            st.error(f"🔴 {difficulty}")
+        else:
+            st.info(f"⚪ {difficulty}")
+    with col3:
         if st.button("🔄 Refresh"):
             st.rerun()
     
@@ -291,7 +360,7 @@ def show_verification_interface(db_service, intern_id, subject):
                         if success:
                             st.success("✅ Question modified and verified!")
                             # Auto-advance to next question
-                            st.session_state[session_key] = min(st.session_state[session_key] + 1, result['total'])
+                            st.session_state[session_key] = min(st.session_state[session_key] + 1, len(questions))
                             # Clear edit mode
                             if edit_mode_key in st.session_state:
                                 del st.session_state[edit_mode_key]
@@ -327,7 +396,7 @@ def show_verification_interface(db_service, intern_id, subject):
                     if success:
                         st.success("✅ Question verified!")
                         # Auto-advance to next question
-                        st.session_state[session_key] = min(st.session_state[session_key] + 1, result['total'])
+                        st.session_state[session_key] = min(st.session_state[session_key] + 1, len(questions))
                         st.rerun()
                     else:
                         st.error("❌ Verification failed")
@@ -338,22 +407,23 @@ def show_verification_interface(db_service, intern_id, subject):
                 st.rerun()
         
         with col3:
-            if st.button(f"🔙 Back", key=f"back_{subject}"):
-                st.session_state['verification_mode'] = False
-                if 'current_subject' in st.session_state:
-                    del st.session_state['current_subject']
-                if 'view_mode' in st.session_state:
-                    del st.session_state['view_mode']
+            if st.button(f"🔙 Back to Days", key=f"back_{subject}"):
+                if 'selected_day' in st.session_state:
+                    del st.session_state['selected_day']
                 st.rerun()
     
-    # Compact navigation - only Previous button
-    col1, col2 = st.columns([1, 3])
+    # Compact navigation
+    col1, col2, col3 = st.columns([1, 2, 1])
     with col1:
         if st.button("⬅️ Prev", disabled=st.session_state[session_key] <= 1):
             st.session_state[session_key] = max(1, st.session_state[session_key] - 1)
             st.rerun()
     with col2:
-        st.write(f"Question {st.session_state[session_key]} of {result['total']}")
+        st.write(f"Question {st.session_state[session_key]} of {len(questions)}")
+    with col3:
+        if st.button("➡️ Next", disabled=st.session_state[session_key] >= len(questions)):
+            st.session_state[session_key] = min(st.session_state[session_key] + 1, len(questions))
+            st.rerun()
 
 def show_subject_progress(db_service, intern_id, subject):
     """Show detailed progress for a subject."""
@@ -370,6 +440,63 @@ def show_subject_progress(db_service, intern_id, subject):
         st.metric("Total", stats['verified'] + stats['modified'])
 
 
+
+def show_day_questions_list(db_service, subject):
+    """Show all questions for the selected day."""
+    selected_day = st.session_state.get('selected_day')
+    if not selected_day:
+        return
+    
+    st.markdown(f"#### 📋 Day-{selected_day} {subject.title()} Questions")
+    
+    # Back to day selection
+    if st.button("🔙 Back to Day Selection"):
+        if 'selected_day' in st.session_state:
+            del st.session_state['selected_day']
+        st.rerun()
+    
+    # Get day questions
+    questions = db_service.get_day_questions(subject, selected_day)
+    
+    if questions:
+        st.info(f"Showing {len(questions)} unverified questions for Day-{selected_day}")
+        
+        for i, question in enumerate(questions, 1):
+            tag = question.get('Tags', 'No tag')
+            difficulty = question.get('Difficulty', 'Unknown')
+            
+            # Color code by difficulty
+            if difficulty == 'Easy':
+                difficulty_color = "🟢"
+            elif difficulty == 'Medium':
+                difficulty_color = "🟡"
+            elif difficulty == 'Hard':
+                difficulty_color = "🔴"
+            else:
+                difficulty_color = "⚪"
+            
+            with st.expander(f"{difficulty_color} Question {i} - {tag} ({difficulty})", expanded=False):
+                st.write(f"**Question:** {question.get('Question', 'No text')}")
+                
+                if question.get('Options'):
+                    for key, value in question['Options'].items():
+                        st.write(f"**{key}.** {value}")
+                    st.write(f"**Answer:** {question.get('Correct_Option')}")
+                
+                if question.get('Explanation'):
+                    st.write(f"**Explanation:** {question.get('Explanation')}")
+                
+                # Show metadata
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.caption(f"Tag: {tag}")
+                with col2:
+                    st.caption(f"Difficulty: {difficulty}")
+                with col3:
+                    st.caption(f"ID: {str(question['_id'])[:8]}...")
+    
+    else:
+        st.success(f"🎉 All Day-{selected_day} questions completed!")
 
 def show_all_questions_list(db_service, subject):
     """Show all questions in the subject for the intern."""
