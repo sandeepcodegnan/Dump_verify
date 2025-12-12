@@ -58,6 +58,8 @@ def show_admin_dashboard(auth_service=None):
     
     with tab4:
         show_collections_overview(db_service)
+    
+
 
 def show_analytics_section(db_service):
     """Display analytics and performance metrics."""
@@ -267,6 +269,8 @@ def show_intern_progress_section(db_service):
                     
                     verified = subject_stats['verified']
                     modified = subject_stats['modified']
+                    reverified = subject_stats['reverified']
+                    remodified = subject_stats['remodified']
                     completed = verified + modified
                     
                     total_verified += completed
@@ -279,12 +283,16 @@ def show_intern_progress_section(db_service):
                     st.progress(progress / 100, text=f"{completed}/{total_questions} ({progress:.1f}%)")
                     
                     # Details
-                    col_a, col_b, col_c = st.columns(3)
+                    col_a, col_b, col_c, col_d, col_e = st.columns(5)
                     with col_a:
                         st.metric("Verified", verified)
                     with col_b:
                         st.metric("Modified", modified)
                     with col_c:
+                        st.metric("Re-verified", reverified)
+                    with col_d:
+                        st.metric("Re-modified", remodified)
+                    with col_e:
                         st.metric("Remaining", total_questions - completed)
             
             with col2:
@@ -340,6 +348,8 @@ def show_collections_overview(db_service):
         
         if not verified_found:
             st.info("No verified collections found")
+
+
     
 
 

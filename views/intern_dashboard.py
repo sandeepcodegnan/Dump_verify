@@ -114,6 +114,7 @@ def show_subject_metrics(db_service, intern_id, subject):
         if st.button(f"✏️ Start Verification", key=f"start_{subject}", type="primary", use_container_width=True):
             st.session_state['verification_mode'] = True
             st.session_state['current_subject'] = subject
+            st.session_state['reverify_mode'] = False
             # Reset day selection to show day picker
             if 'selected_day' in st.session_state:
                 del st.session_state['selected_day']
@@ -122,13 +123,15 @@ def show_subject_metrics(db_service, intern_id, subject):
             st.rerun()
     
     with col2:
-        if st.button(f"📋 View All Questions", key=f"view_{subject}", use_container_width=True):
+        if st.button(f"🔄 Re-verify Questions", key=f"reverify_{subject}", use_container_width=True):
             st.session_state['verification_mode'] = True
-            st.session_state['view_mode'] = True
             st.session_state['current_subject'] = subject
+            st.session_state['reverify_mode'] = True
             # Reset day selection to show day picker
             if 'selected_day' in st.session_state:
                 del st.session_state['selected_day']
+            if 'view_mode' in st.session_state:
+                del st.session_state['view_mode']
             st.rerun()
 
 def show_verification_page(db_service, user, auth_service):
@@ -140,8 +143,8 @@ def show_verification_page(db_service, user, auth_service):
         st.rerun()
         return
     
-    # Header with all buttons in single row
-    col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+    # Header with buttons
+    col1, col2, col3 = st.columns([4, 1, 1])
     with col1:
         st.markdown(f"### ✏️ Verify {subject.title()} Questions")
     with col2:
@@ -149,14 +152,8 @@ def show_verification_page(db_service, user, auth_service):
             st.session_state['verification_mode'] = False
             if 'current_subject' in st.session_state:
                 del st.session_state['current_subject']
-            if 'view_mode' in st.session_state:
-                del st.session_state['view_mode']
             st.rerun()
     with col3:
-        if st.button("📋 View All Mode", disabled=st.session_state.get('view_mode', False)):
-            st.session_state['view_mode'] = True
-            st.rerun()
-    with col4:
         if st.button("🚪 Logout", key="verify_logout"):
             auth_service.logout_user()
             st.rerun()
@@ -167,47 +164,85 @@ def show_verification_page(db_service, user, auth_service):
     if not st.session_state.get('selected_day'):
         show_day_selection(db_service, subject)
     else:
-        # Show appropriate interface based on mode
-        if st.session_state.get('view_mode', False):
-            show_day_questions_list(db_service, subject)
-        else:
-            show_day_verification_interface(db_service, user['user_id'], subject)
+        show_day_verification_interface(db_service, user['user_id'], subject)
 
 def show_day_selection(db_service, subject):
     """Show available days for the subject."""
-    st.markdown("### 📅 Select Day to Verify")
+    reverify_mode = st.session_state.get('reverify_mode', False)
+    
+    if reverify_mode:
+        st.markdown("### 🔄 Select Day to Re-verify")
+        st.info("Re-verification mode: Work on already verified questions")
+    else:
+        st.markdown("### 📅 Select Day to Verify")
     
     # Get available days
-    days = db_service.get_available_days(subject)
+    days = db_service.get_available_days(subject, include_verified=reverify_mode)
     
     if not days:
-        st.info("No unverified questions found for this subject.")
+        if reverify_mode:
+            st.info("No verified questions found for this subject.")
+        else:
+            st.info("No unverified questions found for this subject.")
         return
     
-    # Display days in a grid
-    cols = st.columns(min(len(days), 4))
-    
-    for i, day in enumerate(days):
-        with cols[i % 4]:
-            # Get day stats
+    # Filter days based on mode requirements
+    if reverify_mode:
+        # Only show days with verified questions
+        valid_days = []
+        for day in days:
             day_num = day.replace('day-', '')
             stats = db_service.get_day_stats(subject, day_num)
-            
-            # Create day card
-            st.markdown(f"**{day.title()}**")
-            st.write(f"📝 Total: {stats['total']}")
-            st.write(f"✅ Verified: {stats['verified']}")
-            st.write(f"⏳ Remaining: {stats['remaining']}")
-            
-            if stats['remaining'] > 0:
-                if st.button(f"Start {day}", key=f"start_{day}", use_container_width=True):
+            if stats['verified'] > 0:
+                valid_days.append((day, stats))
+        
+        if not valid_days:
+            st.info("No days with verified questions found.")
+            return
+        
+        # Display only valid days
+        cols = st.columns(min(len(valid_days), 4))
+        for i, (day, stats) in enumerate(valid_days):
+            with cols[i % 4]:
+                day_num = day.replace('day-', '')
+                st.markdown(f"**{day.title()}**")
+                st.write(f"📝 Total: {stats['total']}")
+                st.write(f"✅ Verified: {stats['verified']}")
+                st.write(f"⏳ Remaining: {stats['remaining']}")
+                
+                if st.button(f"Re-verify {day}", key=f"reverify_{day}", use_container_width=True):
                     st.session_state['selected_day'] = day_num
-                    # Clear any existing page state for this day
                     page_key = f"{subject}_day_{day_num}_page"
                     st.session_state[page_key] = 1
                     st.rerun()
-            else:
-                st.success("✅ Complete")
+    else:
+        # Show days with remaining questions
+        valid_days = []
+        for day in days:
+            day_num = day.replace('day-', '')
+            stats = db_service.get_day_stats(subject, day_num)
+            if stats['remaining'] > 0:
+                valid_days.append((day, stats))
+        
+        if not valid_days:
+            st.success("All questions completed!")
+            return
+        
+        # Display only valid days
+        cols = st.columns(min(len(valid_days), 4))
+        for i, (day, stats) in enumerate(valid_days):
+            with cols[i % 4]:
+                day_num = day.replace('day-', '')
+                st.markdown(f"**{day.title()}**")
+                st.write(f"📝 Total: {stats['total']}")
+                st.write(f"✅ Verified: {stats['verified']}")
+                st.write(f"⏳ Remaining: {stats['remaining']}")
+                
+                if st.button(f"Start {day}", key=f"start_{day}", use_container_width=True):
+                    st.session_state['selected_day'] = day_num
+                    page_key = f"{subject}_day_{day_num}_page"
+                    st.session_state[page_key] = 1
+                    st.rerun()
 
 def show_day_verification_interface(db_service, intern_id, subject):
     """Display the edit and verification interface for day questions."""
@@ -227,12 +262,21 @@ def show_day_verification_interface(db_service, intern_id, subject):
                 del st.session_state['selected_day']
             st.rerun()
     
-    # Get day questions
-    questions = db_service.get_day_questions(subject, selected_day)
+    # Get day questions based on mode
+    reverify_mode = st.session_state.get('reverify_mode', False)
+    questions = db_service.get_day_questions(subject, selected_day, include_verified=reverify_mode)
     
-    if not questions:
-        st.success(f"🎉 All Day-{selected_day} questions completed!")
-        return
+    # Filter questions based on mode
+    if reverify_mode:
+        questions = [q for q in questions if q.get('Q_id')]  # Only verified questions
+        if not questions:
+            st.success(f"🎉 No verified questions found for Day-{selected_day}!")
+            return
+    else:
+        questions = [q for q in questions if not q.get('Q_id')]  # Only unverified questions
+        if not questions:
+            st.success(f"🎉 All Day-{selected_day} questions completed!")
+            return
     
     # Initialize pagination for this day
     session_key = f"{subject}_day_{selected_day}_page"
@@ -342,33 +386,59 @@ def show_day_verification_interface(db_service, intern_id, subject):
         btn_col1, btn_col2 = st.columns(2)
         
         with btn_col1:
-            if st.button("✅ Verify with Changes", type="primary", key=f"verify_changes_{question['_id']}", use_container_width=True):
-                # Detect changes
-                changes = {}
-                for key, value in edited_data.items():
-                    if str(question.get(key, "")) != str(value):
-                        changes[key] = value
-                
-                if changes:
-                    with st.spinner("Saving changes and verifying..."):
-                        success = db_service.verify_question(
-                            str(question['_id']), 
-                            intern_id, 
-                            "modified",
-                            changes
-                        )
-                        if success:
-                            st.success("✅ Question modified and verified!")
-                            # Auto-advance to next question
-                            st.session_state[session_key] = min(st.session_state[session_key] + 1, len(questions))
-                            # Clear edit mode
-                            if edit_mode_key in st.session_state:
-                                del st.session_state[edit_mode_key]
-                            st.rerun()
-                        else:
-                            st.error("❌ Verification failed")
-                else:
-                    st.warning("⚠️ No changes detected.")
+            reverify_mode = st.session_state.get('reverify_mode', False)
+            if reverify_mode:
+                if st.button("🔄 Re-verify with Changes", type="primary", key=f"reverify_changes_{question['_id']}", use_container_width=True):
+                    # Detect changes
+                    changes = {}
+                    for key, value in edited_data.items():
+                        if str(question.get(key, "")) != str(value):
+                            changes[key] = value
+                    
+                    if changes:
+                        with st.spinner("Saving changes and re-verifying..."):
+                            success, message = db_service.reverify_question(
+                                str(question['_id']), 
+                                intern_id, 
+                                "remodified",
+                                changes
+                            )
+                            if success:
+                                st.success("🔄 Question re-modified!")
+                                st.session_state[session_key] = min(st.session_state[session_key] + 1, len(questions))
+                                if edit_mode_key in st.session_state:
+                                    del st.session_state[edit_mode_key]
+                                st.rerun()
+                            else:
+                                st.error(f"❌ {message}")
+                    else:
+                        st.warning("⚠️ No changes detected.")
+            else:
+                if st.button("✅ Verify with Changes", type="primary", key=f"verify_changes_{question['_id']}", use_container_width=True):
+                    # Detect changes
+                    changes = {}
+                    for key, value in edited_data.items():
+                        if str(question.get(key, "")) != str(value):
+                            changes[key] = value
+                    
+                    if changes:
+                        with st.spinner("Saving changes and verifying..."):
+                            success = db_service.verify_question(
+                                str(question['_id']), 
+                                intern_id, 
+                                "modified",
+                                changes
+                            )
+                            if success:
+                                st.success("✅ Question modified and verified!")
+                                st.session_state[session_key] = min(st.session_state[session_key] + 1, len(questions))
+                                if edit_mode_key in st.session_state:
+                                    del st.session_state[edit_mode_key]
+                                st.rerun()
+                            else:
+                                st.error("❌ Verification failed")
+                    else:
+                        st.warning("⚠️ No changes detected.")
         
         with btn_col2:
             if st.button("❌ Cancel Edit", key=f"cancel_edit_{question['_id']}", use_container_width=True):
@@ -379,32 +449,51 @@ def show_day_verification_interface(db_service, intern_id, subject):
         # Compact verification actions
         col1, col2, col3 = st.columns(3)
         
-        # Check if question is already verified by checking verified collection
+        reverify_mode = st.session_state.get('reverify_mode', False)
         already_processed = db_service.is_question_verified(str(question['_id']), subject)
         
-        if already_processed:
+        if already_processed and not reverify_mode:
             st.info("✅ This question is already verified")
         
         with col1:
-            if st.button("✅ Verify", type="primary", key=f"verify_{question['_id']}", disabled=already_processed):
-                with st.spinner("Verifying question..."):
-                    success = db_service.verify_question(
-                        str(question['_id']), 
-                        intern_id, 
-                        "verified"
-                    )
-                    if success:
-                        st.success("✅ Question verified!")
-                        # Auto-advance to next question
-                        st.session_state[session_key] = min(st.session_state[session_key] + 1, len(questions))
-                        st.rerun()
-                    else:
-                        st.error("❌ Verification failed")
+            if reverify_mode:
+                if st.button("🔄 Re-verify", type="primary", key=f"reverify_{question['_id']}"):
+                    with st.spinner("Re-verifying question..."):
+                        success, message = db_service.reverify_question(
+                            str(question['_id']), 
+                            intern_id, 
+                            "reverified"
+                        )
+                        if success:
+                            st.success("🔄 Question re-verified!")
+                            st.session_state[session_key] = min(st.session_state[session_key] + 1, len(questions))
+                            st.rerun()
+                        else:
+                            st.error(f"❌ {message}")
+            else:
+                if st.button("✅ Verify", type="primary", key=f"verify_{question['_id']}", disabled=already_processed):
+                    with st.spinner("Verifying question..."):
+                        success = db_service.verify_question(
+                            str(question['_id']), 
+                            intern_id, 
+                            "verified"
+                        )
+                        if success:
+                            st.success("✅ Question verified!")
+                            st.session_state[session_key] = min(st.session_state[session_key] + 1, len(questions))
+                            st.rerun()
+                        else:
+                            st.error("❌ Verification failed")
         
         with col2:
-            if st.button("📝 Modify & Verify", key=f"modify_{question['_id']}", disabled=already_processed):
-                st.session_state[edit_mode_key] = True
-                st.rerun()
+            if reverify_mode:
+                if st.button("📝 Re-modify", key=f"remodify_{question['_id']}"):
+                    st.session_state[edit_mode_key] = True
+                    st.rerun()
+            else:
+                if st.button("📝 Modify & Verify", key=f"modify_{question['_id']}", disabled=already_processed):
+                    st.session_state[edit_mode_key] = True
+                    st.rerun()
         
         with col3:
             if st.button(f"🔙 Back to Days", key=f"back_{subject}"):
@@ -441,109 +530,9 @@ def show_subject_progress(db_service, intern_id, subject):
 
 
 
-def show_day_questions_list(db_service, subject):
-    """Show all questions for the selected day."""
-    selected_day = st.session_state.get('selected_day')
-    if not selected_day:
-        return
-    
-    st.markdown(f"#### 📋 Day-{selected_day} {subject.title()} Questions")
-    
-    # Back to day selection
-    if st.button("🔙 Back to Day Selection"):
-        if 'selected_day' in st.session_state:
-            del st.session_state['selected_day']
-        st.rerun()
-    
-    # Get day questions
-    questions = db_service.get_day_questions(subject, selected_day)
-    
-    if questions:
-        st.info(f"Showing {len(questions)} unverified questions for Day-{selected_day}")
-        
-        for i, question in enumerate(questions, 1):
-            tag = question.get('Tags', 'No tag')
-            difficulty = question.get('Difficulty', 'Unknown')
-            
-            # Color code by difficulty
-            if difficulty == 'Easy':
-                difficulty_color = "🟢"
-            elif difficulty == 'Medium':
-                difficulty_color = "🟡"
-            elif difficulty == 'Hard':
-                difficulty_color = "🔴"
-            else:
-                difficulty_color = "⚪"
-            
-            with st.expander(f"{difficulty_color} Question {i} - {tag} ({difficulty})", expanded=False):
-                st.write(f"**Question:** {question.get('Question', 'No text')}")
-                
-                if question.get('Options'):
-                    for key, value in question['Options'].items():
-                        st.write(f"**{key}.** {value}")
-                    st.write(f"**Answer:** {question.get('Correct_Option')}")
-                
-                if question.get('Explanation'):
-                    st.write(f"**Explanation:** {question.get('Explanation')}")
-                
-                # Show metadata
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.caption(f"Tag: {tag}")
-                with col2:
-                    st.caption(f"Difficulty: {difficulty}")
-                with col3:
-                    st.caption(f"ID: {str(question['_id'])[:8]}...")
-    
-    else:
-        st.success(f"🎉 All Day-{selected_day} questions completed!")
 
-def show_all_questions_list(db_service, subject):
-    """Show all questions in the subject for the intern."""
-    st.markdown(f"#### 📋 All {subject.title()} Questions")
-    
-    # Get all questions with pagination
-    page_size = 10
-    page_key = f'list_page_{subject}'
-    if page_key not in st.session_state:
-        st.session_state[page_key] = 1
-    
-    result = db_service.get_paginated_questions(
-        subject, 
-        page=st.session_state[page_key],
-        size=page_size
-    )
-    
-    if result['questions']:
-        st.info(f"Showing {len(result['questions'])} of {result['total']} unverified questions")
-        
-        for i, question in enumerate(result['questions'], 1):
-            question_num = ((st.session_state[page_key] - 1) * page_size) + i
-            with st.expander(f"Question {question_num}", expanded=False):
-                st.write(f"**Question:** {question.get('Question', 'No text')}")
-                
-                if question.get('Options'):
-                    for key, value in question['Options'].items():
-                        st.write(f"**{key}.** {value}")
-                    st.write(f"**Answer:** {question.get('Correct_Option')}")
-                
-                if question.get('Explanation'):
-                    st.write(f"**Explanation:** {question.get('Explanation')}")
-                
-                st.caption(f"ID: {str(question['_id'])[:8]}...")
-        
-        # Pagination - only Previous button
-        col1, col2 = st.columns([1, 3])
-        with col1:
-            if st.button("⬅️ Previous", key=f"prev_{subject}", disabled=st.session_state[page_key] <= 1):
-                st.session_state[page_key] -= 1
-                st.rerun()
-        
-        with col2:
-            st.write(f"Page {st.session_state[page_key]} of {result['total_pages']}")
-    
-    else:
-        st.success("🎉 All questions completed for this subject!")
+
+
 
 if __name__ == "__main__":
     show_intern_dashboard()
