@@ -48,4 +48,5 @@ ENV/
 
 # OS
 .DS_Store
-Thumbs.db
+Thumbs.dbweb/credentials.json
+credentials.json
