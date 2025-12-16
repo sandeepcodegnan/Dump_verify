@@ -1,12 +1,22 @@
 """Question editor component for verification interface."""
 import streamlit as st
 
+def render_question_image(question_data):
+    """Render question image if Image_URL exists."""
+    image_url = question_data.get("Image_URL")
+    if image_url:
+        try:
+            st.image(image_url, caption="📷 Question Image", width=400)
+        except:
+            st.error("❌ Image not accessible")
+    return image_url
+
 class QuestionEditor:
     def __init__(self):
         pass
     
     def render_mcq_editor(self, question_data, key_prefix=""):
-        """Render MCQ question editor."""
+        """Render MCQ question editor with image support."""
         with st.container():
             st.markdown("### 📝 MCQ Question Editor")
             
@@ -18,10 +28,49 @@ class QuestionEditor:
                 height=100
             )
             
-            # Options
+            # Image upload for aptitude questions
+            current_image_url = question_data.get("Image_URL", "")
+            
+            # Show current image if exists
+            if current_image_url:
+                try:
+                    st.image(current_image_url, caption="Current Image", width=400)
+                except:
+                    st.error("❌ Current image not accessible")
+            
+            # File uploader
+            uploaded_file = st.file_uploader(
+                "Upload New Image (optional)",
+                type=['png', 'jpg', 'jpeg'],
+                key=f"{key_prefix}_image_upload",
+                help="Upload image for questions that require visual elements"
+            )
+            
+            # Handle image upload
+            new_image_url = current_image_url
+            if uploaded_file:
+                from services.s3_service import S3Service
+                s3_service = S3Service()
+                
+                with st.spinner("Uploading image..."):
+                    # Reset file pointer
+                    uploaded_file.seek(0)
+                    new_image_url = s3_service.upload_image(uploaded_file)
+                    
+                    if new_image_url:
+                        st.success("✅ Image uploaded successfully!")
+                        try:
+                            st.image(new_image_url, caption="Uploaded Image", width=400)
+                        except:
+                            st.warning("⚠️ Image uploaded but preview failed")
+                    else:
+                        st.error("❌ Image upload failed")
+                        new_image_url = current_image_url
+            
+            # Options in A, B, C, D order
             st.markdown("**Options:**")
             options = {}
-            for i, option_key in enumerate(['A', 'B', 'C', 'D']):
+            for option_key in ['A', 'B', 'C', 'D']:
                 options[option_key] = st.text_input(
                     f"Option {option_key}",
                     value=question_data.get("Options", {}).get(option_key, ""),
@@ -44,12 +93,21 @@ class QuestionEditor:
                 height=80
             )
             
-            return {
+            result = {
                 "Question": question_text,
                 "Options": options,
                 "Correct_Option": correct_option,
                 "Explanation": explanation
             }
+            
+            # Include Image_URL only if provided
+            if new_image_url and new_image_url.strip():
+                result["Image_URL"] = new_image_url.strip()
+            elif current_image_url and not uploaded_file:
+                # Keep existing image if no new upload
+                result["Image_URL"] = current_image_url
+            
+            return result
     
     def render_code_editor(self, question_data, key_prefix=""):
         """Render code question editor."""

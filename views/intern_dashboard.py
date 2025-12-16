@@ -216,33 +216,123 @@ def show_day_selection(db_service, subject):
                     st.session_state[page_key] = 1
                     st.rerun()
     else:
-        # Show days with remaining questions
-        valid_days = []
+        # Sequential day unlocking - only enable next day after current is completed
+        all_day_stats = []
         for day in days:
             day_num = day.replace('day-', '')
             stats = db_service.get_day_stats(subject, day_num)
-            if stats['remaining'] > 0:
-                valid_days.append((day, stats))
+            all_day_stats.append((day, day_num, stats))
         
-        if not valid_days:
-            st.success("All questions completed!")
+        # Sort by day number (convert to int for proper sorting)
+        all_day_stats.sort(key=lambda x: int(x[1]) if x[1].isdigit() else 999)
+        
+        if not all_day_stats:
+            st.info("No questions found for this subject.")
             return
         
-        # Display only valid days
-        cols = st.columns(min(len(valid_days), 4))
-        for i, (day, stats) in enumerate(valid_days):
+        # Check if day locking is enabled
+        import os
+        
+        # Find .env file automatically
+        env_path = None
+        current_dir = os.getcwd()
+        
+        # Check current directory and parent directories
+        for _ in range(3):  # Check up to 3 levels up
+            test_path = os.path.join(current_dir, '.env')
+            if os.path.exists(test_path):
+                env_path = test_path
+                break
+            current_dir = os.path.dirname(current_dir)
+        
+        # Load environment variables from found .env file
+        if env_path:
+            from dotenv import load_dotenv
+            load_dotenv(env_path)
+        
+        day_locking_enabled = os.getenv('ENABLE_DAY_LOCKING', 'true').lower() == 'true'
+        
+        # Find first incomplete day (only if locking enabled)
+        if day_locking_enabled:
+            current_day_index = len(all_day_stats)  # Default to end if all completed
+            for i, (day, day_num, stats) in enumerate(all_day_stats):
+                if stats['remaining'] > 0:
+                    current_day_index = i
+                    break
+        else:
+            current_day_index = -1  # Allow all days when locking disabled
+        
+        # Check if all days completed (only when locking enabled)
+        if day_locking_enabled and current_day_index >= len(all_day_stats):
+            st.success("🎉 All questions completed!")
+            # Show final progress
+            final_completed = len(all_day_stats)
+            st.info(f"📊 Final Progress: {final_completed}/{len(all_day_stats)} days completed!")
+            return
+        
+        # Display all days but only enable current day
+        cols = st.columns(min(len(all_day_stats), 4))
+        for i, (day, day_num, stats) in enumerate(all_day_stats):
             with cols[i % 4]:
-                day_num = day.replace('day-', '')
-                st.markdown(f"**{day.title()}**")
+                is_current = i == current_day_index
+                is_completed = stats['remaining'] == 0
+                is_locked = i > current_day_index
+                
+                # Day status styling
+                if is_completed:
+                    st.markdown(f"**✅ {day.title()}** (Completed)")
+                elif not day_locking_enabled:
+                    st.markdown(f"**📅 {day.title()}** (Available)")
+                elif is_current:
+                    st.markdown(f"**🔓 {day.title()}** (Current)")
+                else:
+                    st.markdown(f"**🔒 {day.title()}** (Locked)")
+                
                 st.write(f"📝 Total: {stats['total']}")
                 st.write(f"✅ Verified: {stats['verified']}")
                 st.write(f"⏳ Remaining: {stats['remaining']}")
                 
-                if st.button(f"Start {day}", key=f"start_{day}", use_container_width=True):
-                    st.session_state['selected_day'] = day_num
-                    page_key = f"{subject}_day_{day_num}_page"
-                    st.session_state[page_key] = 1
-                    st.rerun()
+                # Enable button based on locking policy
+                if not day_locking_enabled:
+                    # All days available when locking disabled
+                    if st.button(f"Start {day}", key=f"start_{day}", use_container_width=True, type="primary" if not is_completed else "secondary"):
+                        st.session_state['selected_day'] = day_num
+                        page_key = f"{subject}_day_{day_num}_page"
+                        st.session_state[page_key] = 1
+                        st.rerun()
+                elif is_current:
+                    if st.button(f"Start {day}", key=f"start_{day}", use_container_width=True, type="primary"):
+                        st.session_state['selected_day'] = day_num
+                        page_key = f"{subject}_day_{day_num}_page"
+                        st.session_state[page_key] = 1
+                        st.rerun()
+                elif is_completed:
+                    st.success("Completed ✅")
+                else:
+                    st.button(f"Locked 🔒", key=f"locked_{day}", use_container_width=True, disabled=True)
+        
+        # Show progress info with debug
+        completed_days = 0
+        for i, (day, day_num, stats) in enumerate(all_day_stats):
+            if stats['remaining'] == 0:
+                completed_days += 1
+        
+        # Alternative calculation: all days before current day should be completed
+        completed_days_alt = current_day_index
+        
+        current_day_num = all_day_stats[current_day_index][1] if current_day_index < len(all_day_stats) else "N/A"
+        
+        # Calculate completed days based on first day number
+        first_day_num = int(all_day_stats[0][1]) if all_day_stats else 1
+        actual_completed = max(0, first_day_num - 1)  # Days before first available day are completed
+        
+        if actual_completed > 0:
+            st.success(f"🎉 {actual_completed} days completed!")
+        
+        if day_locking_enabled:
+            st.info(f"📊 Progress: {actual_completed}/{len(all_day_stats)} days completed. Complete Day-{current_day_num} to unlock the next day.")
+        else:
+            st.info(f"📊 Progress: {actual_completed}/{len(all_day_stats)} days completed. All days are available.")
 
 def show_day_verification_interface(db_service, intern_id, subject):
     """Display the edit and verification interface for day questions."""
@@ -318,17 +408,71 @@ def show_day_verification_interface(db_service, intern_id, subject):
     
     # Display original question only if NOT in edit mode
     if not st.session_state.get(edit_mode_key, False):
-        with st.expander("📖 Original Question", expanded=True):
-            st.write(f"**Question:** {question.get('Question', 'No question text')}")
-            
-            if question.get('Options'):
-                st.write("**Options:**")
-                for key, value in question['Options'].items():
-                    st.write(f"**{key}.** {value}")
-                st.write(f"**Correct Answer:** {question.get('Correct_Option', 'Not specified')}")
-            
-            if question.get('Explanation'):
-                st.write(f"**Explanation:** {question.get('Explanation')}")
+        reverify_mode = st.session_state.get('reverify_mode', False)
+        
+        if reverify_mode:
+            # Question selector dropdown for re-verification
+            with st.expander("🔄 Select Question to Re-verify", expanded=True):
+                question_options = []
+                for i, q in enumerate(questions):
+                    q_text = q.get('Question', 'No question text')[:80] + "..."
+                    question_options.append(f"Q{i+1}: {q_text}")
+                
+                selected_index = st.selectbox(
+                    "Choose question:",
+                    range(len(questions)),
+                    index=current_index,
+                    format_func=lambda x: question_options[x],
+                    key=f"question_selector_{selected_day}"
+                )
+                
+                # Update session state if selection changed
+                if selected_index != current_index:
+                    st.session_state[session_key] = selected_index + 1
+                    st.rerun()
+                
+                # Show selected question details
+                st.write(f"**Question:** {question.get('Question', 'No question text')}")
+                
+                # Display image if exists
+                if question.get('Image_URL'):
+                    try:
+                        st.image(question['Image_URL'], caption="📷 Question Image", width=400)
+                    except:
+                        st.error("❌ Image not accessible")
+                
+                if question.get('Options'):
+                    st.write("**Options:**")
+                    for key in ['A', 'B', 'C', 'D']:
+                        if key in question['Options']:
+                            st.write(f"**{key}.** {question['Options'][key]}")
+                    st.write(f"**Correct Answer:** {question.get('Correct_Option', 'Not specified')}")
+                
+                explanation = question.get('Text_Explanation', '') or question.get('Explanation', '')
+                if explanation:
+                    st.write(f"**Explanation:** {explanation}")
+        else:
+            # Normal verification mode - show original question
+            with st.expander("📖 Original Question", expanded=True):
+                st.write(f"**Question:** {question.get('Question', 'No question text')}")
+                
+                # Display image if exists
+                if question.get('Image_URL'):
+                    try:
+                        st.image(question['Image_URL'], caption="📷 Question Image", width=400)
+                    except:
+                        st.error("❌ Image not accessible")
+                
+                if question.get('Options'):
+                    st.write("**Options:**")
+                    for key in ['A', 'B', 'C', 'D']:
+                        if key in question['Options']:
+                            st.write(f"**{key}.** {question['Options'][key]}")
+                    st.write(f"**Correct Answer:** {question.get('Correct_Option', 'Not specified')}")
+                
+                explanation = question.get('Text_Explanation', '') or question.get('Explanation', '')
+                if explanation:
+                    st.write(f"**Explanation:** {explanation}")
     
     if st.session_state.get(edit_mode_key, False):
         # Compact edit layout
@@ -337,9 +481,19 @@ def show_day_verification_interface(db_service, intern_id, subject):
         with col1:
             st.markdown("**📖 Original**")
             st.text(f"Q: {question.get('Question', 'No question text')[:100]}...")
+            
+            # Show image thumbnail if exists
+            if question.get('Image_URL'):
+                try:
+                    st.image(question['Image_URL'], width=120, caption="Original Image")
+                except:
+                    st.text("❌ Image not accessible")
+            
             if question.get('Options'):
-                for key, value in question['Options'].items():
-                    st.text(f"{key}. {value[:50]}...")
+                for key in ['A', 'B', 'C', 'D']:
+                    if key in question.get('Options', {}):
+                        value = question['Options'][key]
+                        st.text(f"{key}. {value[:50]}...")
                 st.text(f"Answer: {question.get('Correct_Option', 'Not specified')}")
         
         with col2:
@@ -350,6 +504,45 @@ def show_day_verification_interface(db_service, intern_id, subject):
                 key=f"edit_{question['_id']}_question",
                 height=60
             )
+            
+            # Image upload editor - only for questions with existing Image_URL
+            current_image_url = question.get("Image_URL", "")
+            new_image_url = current_image_url
+            
+            if current_image_url:  # Only show image upload if question has Image_URL
+                # Current image display
+                try:
+                    st.image(current_image_url, width=120, caption="Current Image")
+                except:
+                    st.error("❌ Image not accessible")
+                
+                # Image upload editor
+                uploaded_file = st.file_uploader(
+                    "Upload New Image",
+                    type=['png', 'jpg', 'jpeg'],
+                    key=f"edit_{question['_id']}_image_upload",
+                    help="Upload new image to replace current one"
+                )
+                
+                # Handle image upload
+                if uploaded_file:
+                    from services.s3_service import S3Service
+                    s3_service = S3Service()
+                    
+                    with st.spinner("Uploading..."):
+                        # Reset file pointer
+                        uploaded_file.seek(0)
+                        new_image_url = s3_service.upload_image(uploaded_file)
+                        
+                        if new_image_url:
+                            st.success("✅ Uploaded!")
+                            try:
+                                st.image(new_image_url, width=120, caption="New Image")
+                            except:
+                                st.warning("⚠️ Uploaded but preview failed")
+                        else:
+                            st.error("❌ Upload failed")
+                            new_image_url = current_image_url
             
             options = {}
             col_a, col_b = st.columns(2)
@@ -369,10 +562,11 @@ def show_day_verification_interface(db_service, intern_id, subject):
                     key=f"edit_{question['_id']}_correct"
                 )
             with col_exp:
-                explanation = st.text_input(
+                explanation = st.text_area(
                     "Explanation",
-                    value=question.get("Explanation", ""),
-                    key=f"edit_{question['_id']}_explanation"
+                    value=question.get("Text_Explanation", "") or question.get("Explanation", ""),
+                    key=f"edit_{question['_id']}_explanation",
+                    height=80
                 )
             
             edited_data = {
@@ -381,6 +575,13 @@ def show_day_verification_interface(db_service, intern_id, subject):
                 "Correct_Option": correct_option,
                 "Explanation": explanation
             }
+            
+            # Include Image_URL in edited data only if question originally had image
+            if current_image_url:  # Only include if question originally had Image_URL
+                if new_image_url and new_image_url.strip():
+                    edited_data["Image_URL"] = new_image_url.strip()
+                else:
+                    edited_data["Image_URL"] = current_image_url
         
         # Compact action buttons
         btn_col1, btn_col2 = st.columns(2)
@@ -389,11 +590,15 @@ def show_day_verification_interface(db_service, intern_id, subject):
             reverify_mode = st.session_state.get('reverify_mode', False)
             if reverify_mode:
                 if st.button("🔄 Re-verify with Changes", type="primary", key=f"reverify_changes_{question['_id']}", use_container_width=True):
-                    # Detect changes
+                    # Detect changes including Image_url
                     changes = {}
                     for key, value in edited_data.items():
                         if str(question.get(key, "")) != str(value):
                             changes[key] = value
+                    
+                    # Handle Image_url removal
+                    if not image_url.strip() and question.get("Image_url"):
+                        changes["Image_url"] = ""
                     
                     if changes:
                         with st.spinner("Saving changes and re-verifying..."):
@@ -415,11 +620,15 @@ def show_day_verification_interface(db_service, intern_id, subject):
                         st.warning("⚠️ No changes detected.")
             else:
                 if st.button("✅ Verify with Changes", type="primary", key=f"verify_changes_{question['_id']}", use_container_width=True):
-                    # Detect changes
+                    # Detect changes including Image_url
                     changes = {}
                     for key, value in edited_data.items():
                         if str(question.get(key, "")) != str(value):
                             changes[key] = value
+                    
+                    # Handle Image_url removal
+                    if not image_url.strip() and question.get("Image_url"):
+                        changes["Image_url"] = ""
                     
                     if changes:
                         with st.spinner("Saving changes and verifying..."):
@@ -501,18 +710,19 @@ def show_day_verification_interface(db_service, intern_id, subject):
                     del st.session_state['selected_day']
                 st.rerun()
     
-    # Compact navigation
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col1:
-        if st.button("⬅️ Prev", disabled=st.session_state[session_key] <= 1):
-            st.session_state[session_key] = max(1, st.session_state[session_key] - 1)
-            st.rerun()
-    with col2:
-        st.write(f"Question {st.session_state[session_key]} of {len(questions)}")
-    with col3:
-        if st.button("➡️ Next", disabled=st.session_state[session_key] >= len(questions)):
-            st.session_state[session_key] = min(st.session_state[session_key] + 1, len(questions))
-            st.rerun()
+    # Compact navigation (only show in normal verification mode)
+    if not st.session_state.get('reverify_mode', False):
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col1:
+            if st.button("⬅️ Prev", disabled=st.session_state[session_key] <= 1):
+                st.session_state[session_key] = max(1, st.session_state[session_key] - 1)
+                st.rerun()
+        with col2:
+            st.write(f"Question {st.session_state[session_key]} of {len(questions)}")
+        with col3:
+            if st.button("➡️ Next", disabled=st.session_state[session_key] >= len(questions)):
+                st.session_state[session_key] = min(st.session_state[session_key] + 1, len(questions))
+                st.rerun()
 
 def show_subject_progress(db_service, intern_id, subject):
     """Show detailed progress for a subject."""

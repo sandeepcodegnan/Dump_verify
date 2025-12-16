@@ -1,0 +1,19 @@
+# Virtual Environment
+env/
+
+# Local configuration and credentials (avoid committing sensitive data)
+# local_config.json
+# credentials.json
+
+# Python bytecode and cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Optional: OS-specific files
+.DS_Store
+Thumbs.db
+
+# ignore .env files if exists
+.env
+**/.env
