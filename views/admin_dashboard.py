@@ -45,7 +45,7 @@ def show_admin_dashboard(auth_service=None):
         st.metric("Completion Rate", f"{completion_rate}%", "+3%")
     
     # Tabs for different sections
-    tab1, tab2, tab3, tab4 = st.tabs(["📈 Analytics", "👥 Intern Management", "📊 Intern Progress", "📋 Collections"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 Analytics", "👥 Intern Management", "📊 Intern Progress", "📋 Collections", "⚙️ Settings"])
     
     with tab1:
         show_analytics_section(db_service)
@@ -58,6 +58,9 @@ def show_admin_dashboard(auth_service=None):
     
     with tab4:
         show_collections_overview(db_service)
+    
+    with tab5:
+        show_system_settings()
     
 
 
@@ -349,9 +352,82 @@ def show_collections_overview(db_service):
         if not verified_found:
             st.info("No verified collections found")
 
-
+def show_system_settings():
+    """Display system configuration settings."""
+    st.subheader("⚙️ System Settings")
     
+    st.markdown("**Day Locking Configuration**")
+    
+    import os
+    current_setting = os.getenv('ENABLE_DAY_LOCKING', 'true').lower() == 'true'
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        day_locking_enabled = st.checkbox(
+            "Enable Sequential Day Locking",
+            value=current_setting,
+            help="When enabled, interns must complete current day before accessing next day. When disabled, all days are available."
+        )
+        
+        if day_locking_enabled != current_setting:
+            if st.button("⚙️ Update Setting", type="primary"):
+                # Update environment variable
+                new_value = 'true' if day_locking_enabled else 'false'
+                update_env_setting('ENABLE_DAY_LOCKING', new_value)
+                st.success(f"✅ Day locking {'enabled' if day_locking_enabled else 'disabled'} successfully!")
+                st.info("🔄 Setting will take effect for new sessions.")
+                st.rerun()
+    
+    with col2:
+        st.info(
+            "📝 **Day Locking Modes:**\n\n"
+            "✅ **Enabled**: Sequential unlocking\n"
+            "❌ **Disabled**: All days available"
+        )
 
+def update_env_setting(key, value):
+    """Update environment variable in .env file."""
+    import os
+    
+    # Find .env file automatically
+    env_path = None
+    current_dir = os.getcwd()
+    
+    # Check current directory and parent directories
+    for _ in range(3):  # Check up to 3 levels up
+        test_path = os.path.join(current_dir, '.env')
+        if os.path.exists(test_path):
+            env_path = test_path
+            break
+        current_dir = os.path.dirname(current_dir)
+    
+    if not env_path:
+        env_path = '.env'  # Fallback to current directory
+    
+    # Read current .env file
+    lines = []
+    if os.path.exists(env_path):
+        with open(env_path, 'r') as f:
+            lines = f.readlines()
+    
+    # Update or add the setting
+    updated = False
+    for i, line in enumerate(lines):
+        if line.startswith(f'{key}='):
+            lines[i] = f'{key}={value}\n'
+            updated = True
+            break
+    
+    if not updated:
+        lines.append(f'{key}={value}\n')
+    
+    # Write back to .env file
+    with open(env_path, 'w') as f:
+        f.writelines(lines)
+    
+    # Update current environment
+    os.environ[key] = value
 
 def show_audit_logs(db_service):
     """Display audit logs and activity tracking."""
