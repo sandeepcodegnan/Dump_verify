@@ -578,10 +578,7 @@ def show_day_verification_interface(db_service, intern_id, subject):
             
             # Include Image_URL in edited data only if question originally had image
             if current_image_url:  # Only include if question originally had Image_URL
-                if new_image_url and new_image_url.strip():
-                    edited_data["Image_URL"] = new_image_url.strip()
-                else:
-                    edited_data["Image_URL"] = current_image_url
+                edited_data["Image_URL"] = new_image_url.strip() if new_image_url and new_image_url.strip() else current_image_url
         
         # Compact action buttons
         btn_col1, btn_col2 = st.columns(2)
@@ -590,15 +587,11 @@ def show_day_verification_interface(db_service, intern_id, subject):
             reverify_mode = st.session_state.get('reverify_mode', False)
             if reverify_mode:
                 if st.button("🔄 Re-verify with Changes", type="primary", key=f"reverify_changes_{question['_id']}", use_container_width=True):
-                    # Detect changes including Image_url
+                    # Detect changes including Image_URL
                     changes = {}
                     for key, value in edited_data.items():
                         if str(question.get(key, "")) != str(value):
                             changes[key] = value
-                    
-                    # Handle Image_url removal
-                    if not image_url.strip() and question.get("Image_url"):
-                        changes["Image_url"] = ""
                     
                     if changes:
                         with st.spinner("Saving changes and re-verifying..."):
@@ -620,15 +613,11 @@ def show_day_verification_interface(db_service, intern_id, subject):
                         st.warning("⚠️ No changes detected.")
             else:
                 if st.button("✅ Verify with Changes", type="primary", key=f"verify_changes_{question['_id']}", use_container_width=True):
-                    # Detect changes including Image_url
+                    # Detect changes including Image_URL
                     changes = {}
                     for key, value in edited_data.items():
                         if str(question.get(key, "")) != str(value):
                             changes[key] = value
-                    
-                    # Handle Image_url removal
-                    if not image_url.strip() and question.get("Image_url"):
-                        changes["Image_url"] = ""
                     
                     if changes:
                         with st.spinner("Saving changes and verifying..."):
