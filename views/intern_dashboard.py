@@ -492,7 +492,7 @@ def show_day_verification_interface(db_service, intern_id, subject):
             if question.get('Options'):
                 for key in ['A', 'B', 'C', 'D']:
                     if key in question.get('Options', {}):
-                        value = question['Options'][key]
+                        value = str(question['Options'][key])
                         st.text(f"{key}. {value[:50]}...")
                 st.text(f"Answer: {question.get('Correct_Option', 'Not specified')}")
         
