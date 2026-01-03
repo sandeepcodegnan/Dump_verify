@@ -56,20 +56,29 @@ def show_progress_overview(db_service, intern_id, assignments):
     total_assigned = sum(assignments['quotas'].values())
     stats = db_service.get_intern_stats(intern_id)
     total_completed = stats['verified'] + stats['modified']
-    remaining = total_assigned - total_completed
+    remaining = max(0, total_assigned - total_completed)
+    completion_rate = min(100.0, (total_completed / total_assigned * 100)) if total_assigned > 0 else 0
     
     with col1:
         st.metric("Total Assigned", f"{total_assigned:,}")
     
     with col2:
-        st.metric("Completed", f"{total_completed:,}", f"+{stats['verified']}")
+        questions_today = db_service.get_questions_today(intern_id, None)
+        st.metric("Completed", f"{total_completed:,}", f"+{questions_today}")
     
     with col3:
         st.metric("Remaining", f"{remaining:,}")
     
-    with col4:
-        completion_rate = (total_completed / total_assigned * 100) if total_assigned > 0 else 0
+    with col4: 
         st.metric("Progress", f"{completion_rate:.1f}%")
+
+    # Progress bar below metrics
+    col1, col2, col3, col4, col5 = st.columns([6, 1, 1, 1, 1])
+    with col1:
+        st.progress(completion_rate / 100, text=f"Overall Progress:")
+    with col2:
+        st.write(f"{completion_rate:.1f}%")
+    
     
     # Progress by subject
     st.markdown("**Progress by Subject**")
@@ -79,48 +88,100 @@ def show_progress_overview(db_service, intern_id, assignments):
         completed = subject_stats['verified'] + subject_stats['modified']
         progress = (completed / quota * 100) if quota > 0 else 0
         
-        col1, col2 = st.columns([3, 1])
+        col1, col2 = st.columns([2, 1])
         with col1:
-            st.progress(progress / 100, text=f"{subject.title()}: {completed}/{quota}")
+            progress_value = min(1.0, completed / quota) if quota > 0 else 0
+            progress_percent = progress_value * 100
+            st.progress(progress_value, text=f"{subject.title()}: {completed}/{quota}")
         with col2:
-            st.write(f"{progress:.1f}%")
+            st.write(f"{progress_percent:.1f}%")
 
 def show_subject_metrics(db_service, intern_id, subject):
-    """Display metrics and actions for a specific subject."""
+    """Display comprehensive metrics and actions for a specific subject."""
     st.markdown(f"### 📝 {subject.title()} Overview")
     
-    # Show metrics
+    # Get comprehensive metrics
     total_questions = db_service.get_subject_question_count(subject)
-    verified_count = db_service.get_intern_subject_stats(intern_id, subject)
-    completed = verified_count['verified'] + verified_count['modified']
+    stats = db_service.get_intern_subject_stats(intern_id, subject)
+    completed = stats['verified'] + stats['modified']
+    remaining = max(0, total_questions - completed)
     
-    col1, col2, col3 = st.columns(3)
+    # Basic metrics row
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("Total Questions", total_questions)
     with col2:
         st.metric("Completed", completed)
     with col3:
-        st.metric("Remaining", total_questions - completed)
+        st.metric("Remaining", remaining)
+    with col4:
+        completion_rate = min(100.0, (completed / total_questions * 100)) if total_questions > 0 else 0
+        st.metric("📊 Completion Rate", f"{completion_rate:.1f}%")
+    
+    # Verification Status Breakdown
+    st.markdown("**📋 Verification Status Breakdown**")
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("✅ Verified", stats['verified'], help="Questions verified without changes")
+    with col2:
+        st.metric("✏️ Modified", stats['modified'], help="Questions verified with changes")
+    with col3:
+        st.metric("🔄 Re-verified", stats['reverified'], help="Questions re-verified")
+    with col4:
+        st.metric("📝 Re-modified", stats['remodified'], help="Questions re-modified")
+    
+    # Quality Metrics
+    st.markdown("**📈 Quality Metrics**")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        modification_rate = (stats['modified'] / completed * 100) if completed > 0 else 0
+        st.metric("📈 Modification Rate", f"{modification_rate:.1f}%", help="% of questions that needed changes")
+    with col2:
+        reverification_rate = (stats['reverified'] / completed * 100) if completed > 0 else 0
+        st.metric("🔍 Re-verification Rate", f"{reverification_rate:.1f}%", help="% that needed re-work")
+    with col3:
+        daily_avg = db_service.get_daily_average(intern_id, subject)
+        st.metric("⚡ Daily Average", f"{daily_avg:.1f}", help="Questions per day")
+    
+    # Time-based Metrics
+    st.markdown("**⏱️ Activity Metrics**")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        questions_today = db_service.get_questions_today(intern_id, subject)
+        st.metric("📅 Questions Today", questions_today)
+    with col2:
+        last_activity = db_service.get_last_activity(intern_id, subject)
+        st.metric("⏱️ Last Activity", last_activity or "Never")
+    with col3:
+        if remaining > 0 and daily_avg > 0:
+            days_to_complete = int(remaining / daily_avg) + 1
+            st.metric("🎯 Est. Days Left", f"{days_to_complete} days")
+        else:
+            st.metric("🎯 Status", "Complete" if remaining == 0 else "--")
     
     # Progress bar
     if total_questions > 0:
-        progress = completed / total_questions
+        progress = min(1.0, completed / total_questions)
         st.progress(progress, text=f"Progress: {progress*100:.1f}%")
     
     # Action buttons
     col1, col2 = st.columns(2)
     
     with col1:
-        if st.button(f"✏️ Start Verification", key=f"start_{subject}", type="primary", use_container_width=True):
-            st.session_state['verification_mode'] = True
-            st.session_state['current_subject'] = subject
-            st.session_state['reverify_mode'] = False
-            # Reset day selection to show day picker
-            if 'selected_day' in st.session_state:
-                del st.session_state['selected_day']
-            if 'view_mode' in st.session_state:
-                del st.session_state['view_mode']
-            st.rerun()
+        # Hide start verification button if status is complete
+        if remaining > 0:  # Only show if there are remaining questions
+            if st.button(f"✏️ Start Verification", key=f"start_{subject}", type="primary", use_container_width=True):
+                st.session_state['verification_mode'] = True
+                st.session_state['current_subject'] = subject
+                st.session_state['reverify_mode'] = False
+                # Reset day selection to show day picker
+                if 'selected_day' in st.session_state:
+                    del st.session_state['selected_day']
+                if 'view_mode' in st.session_state:
+                    del st.session_state['view_mode']
+                st.rerun()
+        else:
+            st.success("✅ All questions completed!")
     
     with col2:
         if st.button(f"🔄 Re-verify Questions", key=f"reverify_{subject}", use_container_width=True):
@@ -415,7 +476,7 @@ def show_day_verification_interface(db_service, intern_id, subject):
             with st.expander("🔄 Select Question to Re-verify", expanded=True):
                 question_options = []
                 for i, q in enumerate(questions):
-                    q_text = q.get('Question', 'No question text')[:80] + "..."
+                    q_text = q.get('Question', 'No question text')
                     question_options.append(f"Q{i+1}: {q_text}")
                 
                 selected_index = st.selectbox(
@@ -480,7 +541,7 @@ def show_day_verification_interface(db_service, intern_id, subject):
         
         with col1:
             st.markdown("**📖 Original**")
-            st.text(f"Q: {question.get('Question', 'No question text')[:100]}...")
+            st.text(f"Q: {question.get('Question', 'No question text')}")
             
             # Show image thumbnail if exists
             if question.get('Image_URL'):
@@ -493,7 +554,7 @@ def show_day_verification_interface(db_service, intern_id, subject):
                 for key in ['A', 'B', 'C', 'D']:
                     if key in question.get('Options', {}):
                         value = str(question['Options'][key])
-                        st.text(f"{key}. {value[:50]}...")
+                        st.text(f"{key}. {value}")
                 st.text(f"Answer: {question.get('Correct_Option', 'Not specified')}")
         
         with col2:
@@ -505,44 +566,54 @@ def show_day_verification_interface(db_service, intern_id, subject):
                 height=60
             )
             
-            # Image upload editor - only for questions with existing Image_URL
+            # Image upload editor - show for questions with existing Image_URL OR for aptitude questions
             current_image_url = question.get("Image_URL", "")
             new_image_url = current_image_url
             
-            if current_image_url:  # Only show image upload if question has Image_URL
+            # Check if subject is aptitude-related
+            is_aptitude = 'aptitude' in subject.lower()
+            
+            if current_image_url or is_aptitude:  # Show image upload if question has Image_URL OR is aptitude
                 # Current image display
-                try:
-                    st.image(current_image_url, width=120, caption="Current Image")
-                except:
-                    st.error("❌ Image not accessible")
-                
-                # Image upload editor
-                uploaded_file = st.file_uploader(
-                    "Upload New Image",
-                    type=['png', 'jpg', 'jpeg'],
-                    key=f"edit_{question['_id']}_image_upload",
-                    help="Upload new image to replace current one"
-                )
-                
-                # Handle image upload
-                if uploaded_file:
-                    from services.s3_service import S3Service
-                    s3_service = S3Service()
+                if current_image_url:
+                    try:
+                        st.image(current_image_url, width=120, caption="Current Image")
+                    except:
+                        st.error("❌ Image not accessible")
                     
-                    with st.spinner("Uploading..."):
-                        # Reset file pointer
-                        uploaded_file.seek(0)
-                        new_image_url = s3_service.upload_image(uploaded_file)
+                    # Remove image option
+                    if st.checkbox("Remove current image", key=f"remove_image_{question['_id']}"):
+                        new_image_url = ""
+                        st.info("✅ Image will be removed")
+                
+                # Image upload editor (only show if not removing)
+                if not st.session_state.get(f"remove_image_{question['_id']}", False):
+                    uploaded_file = st.file_uploader(
+                        "Upload New Image",
+                        type=['png', 'jpg', 'jpeg'],
+                        key=f"edit_{question['_id']}_image_upload",
+                        help="Upload new image to replace current one"
+                    )
+                    
+                    # Handle image upload
+                    if uploaded_file:
+                        from services.s3_service import S3Service
+                        s3_service = S3Service()
                         
-                        if new_image_url:
-                            st.success("✅ Uploaded!")
-                            try:
-                                st.image(new_image_url, width=120, caption="New Image")
-                            except:
-                                st.warning("⚠️ Uploaded but preview failed")
-                        else:
-                            st.error("❌ Upload failed")
-                            new_image_url = current_image_url
+                        with st.spinner("Uploading..."):
+                            # Reset file pointer
+                            uploaded_file.seek(0)
+                            new_image_url = s3_service.upload_image(uploaded_file)
+                            
+                            if new_image_url:
+                                st.success("✅ Uploaded!")
+                                try:
+                                    st.image(new_image_url, width=120, caption="New Image")
+                                except:
+                                    st.warning("⚠️ Uploaded but preview failed")
+                            else:
+                                st.error("❌ Upload failed")
+                                new_image_url = current_image_url
             
             options = {}
             col_a, col_b = st.columns(2)
@@ -576,8 +647,8 @@ def show_day_verification_interface(db_service, intern_id, subject):
                 "Explanation": explanation
             }
             
-            # Include Image_URL in edited data only if question originally had image
-            if current_image_url:  # Only include if question originally had Image_URL
+            # Include Image_URL in edited data for questions with existing Image_URL OR aptitude questions
+            if current_image_url or is_aptitude:  # Include if question originally had Image_URL OR is aptitude
                 edited_data["Image_URL"] = new_image_url.strip() if new_image_url and new_image_url.strip() else current_image_url
         
         # Compact action buttons

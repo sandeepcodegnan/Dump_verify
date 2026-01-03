@@ -248,109 +248,207 @@ def show_intern_progress_section(db_service):
         st.info("No interns found in the system.")
         return
     
-    for intern in interns:
-        with st.expander(f"👨‍💻 {intern['name']} ({intern['user_id']})", expanded=True):
-            col1, col2 = st.columns([2, 1])
+    # Summary stats and intern selection
+    col1, col2, col3 = st.columns(3)
+    active_interns = len([i for i in interns if i.get('allocated_subjects')])
+    
+    with col1:
+        st.metric("Total Interns", len(interns))
+    with col2:
+        st.metric("Active Interns", active_interns)
+    with col3:
+        # Intern selection dropdown
+        intern_options = [f"{intern['name']} ({intern['user_id']})" for intern in interns if intern.get('allocated_subjects')]
+        if not intern_options:
+            st.info("No active interns found.")
+            return
             
-            with col1:
-                # Get intern's allocated subjects
-                allocated_subjects = intern.get('allocated_subjects', [])
-                
-                if not allocated_subjects:
-                    st.warning("No subjects allocated to this intern")
-                    continue
-                
-                st.markdown("**Subject-wise Progress:**")
-                
-                total_verified = 0
-                total_assigned = 0
-                
-                for subject in allocated_subjects:
-                    # Get subject stats
-                    subject_stats = db_service.get_intern_subject_stats(intern['user_id'], subject)
-                    total_questions = db_service.get_subject_question_count(subject)
-                    
-                    verified = subject_stats['verified']
-                    modified = subject_stats['modified']
-                    reverified = subject_stats['reverified']
-                    remodified = subject_stats['remodified']
-                    completed = verified + modified
-                    
-                    total_verified += completed
-                    total_assigned += total_questions
-                    
-                    # Progress bar
-                    progress = (completed / total_questions * 100) if total_questions > 0 else 0
-                    
-                    st.write(f"**{subject.title()}:**")
-                    st.progress(progress / 100, text=f"{completed}/{total_questions} ({progress:.1f}%)")
-                    
-                    # Details
-                    col_a, col_b, col_c, col_d, col_e = st.columns(5)
-                    with col_a:
-                        st.metric("Verified", verified)
-                    with col_b:
-                        st.metric("Modified", modified)
-                    with col_c:
-                        st.metric("Re-verified", reverified)
-                    with col_d:
-                        st.metric("Re-modified", remodified)
-                    with col_e:
-                        st.metric("Remaining", total_questions - completed)
-            
-            with col2:
-                st.markdown("**Overall Stats:**")
-                
-                # Overall progress
-                overall_progress = (total_verified / total_assigned * 100) if total_assigned > 0 else 0
-                st.metric("Overall Progress", f"{overall_progress:.1f}%")
-                st.metric("Total Completed", total_verified)
-                st.metric("Total Assigned", total_assigned)
-                
-                # Status indicator
-                if overall_progress >= 90:
-                    st.success("✅ Excellent Progress")
-                elif overall_progress >= 70:
-                    st.info("🟡 Good Progress")
-                elif overall_progress >= 50:
-                    st.warning("🟠 Moderate Progress")
-                else:
-                    st.error("🔴 Needs Attention")
-                
-                # Last activity
-                if intern.get('last_allocation'):
-                    st.write(f"**Last Allocation:** {intern['last_allocation'].strftime('%Y-%m-%d')}")
+        selected_intern_option = st.selectbox(
+            "Select Intern",
+            options=intern_options,
+            index=0,
+            key="intern_progress_selector"
+        )
+    
+    st.divider()
+    
+    # Get selected intern
+    selected_name = selected_intern_option.split(' (')[0]
+    selected_intern = next(i for i in interns if i['name'] == selected_name)
+    
+    # Show detailed progress for selected intern only
+    if selected_intern:
+        show_detailed_intern_progress(db_service, selected_intern)
 
+def show_detailed_intern_progress(db_service, intern):
+    """Show detailed progress for a specific intern."""
+    allocated_subjects = intern.get('allocated_subjects', [])
+    if not allocated_subjects:
+        st.warning("No subjects allocated to this intern")
+        return
+    
+    # Calculate overall progress
+    total_verified = 0
+    total_assigned = 0
+    for subject in allocated_subjects:
+        subject_stats = db_service.get_intern_subject_stats(intern['user_id'], subject)
+        total_questions = db_service.get_subject_question_count(subject)
+        completed = subject_stats['verified'] + subject_stats['modified']
+        total_verified += completed
+        total_assigned += total_questions
+    
+    overall_progress = (total_verified / total_assigned * 100) if total_assigned > 0 else 0
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        # Intern header
+        st.markdown(f"### 👨💻 {intern['name']} ({intern['user_id']})")
+    with col4:
+        # Subject selection dropdown
+        subject_options = []
+        for subject in allocated_subjects:
+            total_questions = db_service.get_subject_question_count(subject)
+            subject_options.append((subject, f"{subject.title()}"))
+        
+        selected_subject = st.selectbox(
+            "Select Subject",
+            options=[opt[0] for opt in subject_options],
+            format_func=lambda x: next(opt[1] for opt in subject_options if opt[0] == x),
+            key=f"subject_selector_{intern['user_id']}",
+            label_visibility="collapsed"
+        )
+    
+    
+    # Overall stats
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        if overall_progress >= 90:
+            st.success(f"✅ {overall_progress:.1f}%")
+        elif overall_progress >= 70:
+            st.info(f"🟡 {overall_progress:.1f}%")
+        elif overall_progress >= 50:
+            st.warning(f"🟠 {overall_progress:.1f}%")
+        else:
+            st.error(f"🔴 {overall_progress:.1f}%")
+    with col2:
+        st.metric("Total Completed", total_verified)
+    with col3:
+        st.metric("Total Assigned", total_assigned)
+    with col4:
+        st.metric("Remaining", total_assigned - total_verified)
+    
+    # Progress bar
+    st.progress(min(1.0, overall_progress / 100), text=f"Overall Progress: {overall_progress:.1f}%")
+    
+    st.divider()
+    
+    # Subject-wise details
+    col_title, col_dropdown = st.columns([1, 2])
+    
+    with col_title:
+        st.markdown("**📚 Subject-wise Progress**")
+    
+    
+    
+    if selected_subject:
+        subject_stats = db_service.get_intern_subject_stats(intern['user_id'], selected_subject)
+        total_questions = db_service.get_subject_question_count(selected_subject)
+        completed = subject_stats['verified'] + subject_stats['modified']
+        subject_progress = (completed / total_questions * 100) if total_questions > 0 else 0
+        
+        # Performance indicators
+        daily_avg = db_service.get_daily_average(intern['user_id'], selected_subject)
+        questions_today = db_service.get_questions_today(intern['user_id'], selected_subject)
+        last_activity = db_service.get_last_activity(intern['user_id'], selected_subject)
+        
+        # Subject progress bar
+        st.progress(subject_progress / 100, text=f"Progress: {subject_progress:.1f}%")
+        
+        # First row - Progress and counts
+        col_a, col_b, col_c, col_d = st.columns(4)
+        with col_a:
+            st.metric("Total Questions", total_questions)
+        with col_b:
+            st.metric("Verified", subject_stats['verified'])
+        with col_c:
+            st.metric("Modified", subject_stats['modified'])
+        with col_d:
+            st.metric("Remaining", total_questions - completed)
+        
+        # Second row - Performance and activity
+        col_e, col_f, col_g, col_h = st.columns(4)
+        with col_e:
+            st.metric("Daily Avg", f"{daily_avg:.1f}")
+        with col_f:
+            st.metric("Today", questions_today)
+        with col_g:
+            st.metric("Re-verified", subject_stats['reverified'])
+        with col_h:
+            st.metric("Last Activity", last_activity or "Never")
+
+            
 def show_collections_overview(db_service):
-    """Display collections status and management."""
+    """Display enhanced collections status and management."""
     st.subheader("📋 Collections Overview")
     
     # Get actual collections from database
     available_subjects = db_service.get_available_subjects()
-    verified_subjects = db_service.get_verified_subjects()
     
-    col1, col2 = st.columns(2)
+    if not available_subjects:
+        st.info("No collections found")
+        return
+    
+    # Quick stats
+    col1, col2, col3, col4 = st.columns(4)
+    total_questions = sum(available_subjects.values())
+    total_verified = sum(db_service.get_verified_count(subject) for subject in available_subjects.keys())
+    completion_rate = (total_verified / total_questions * 100) if total_questions > 0 else 0
     
     with col1:
-        st.markdown("**Source Collections (Unverified)**")
-        if available_subjects:
-            for subject, count in available_subjects.items():
-                st.write(f"• **{subject.title()}**: {count:,} questions")
-        else:
-            st.info("No source collections found")
-    
+        st.metric("Total Collections", len(available_subjects))
     with col2:
-        st.markdown("**Verified Collections**")
-        verified_found = False
-        if available_subjects:
-            for subject in available_subjects.keys():
-                verified_count = db_service.get_verified_count(subject)
-                if verified_count > 0:
-                    st.write(f"• **{subject.title()}**: {verified_count:,} verified")
-                    verified_found = True
+        st.metric("Total Questions", f"{total_questions:,}")
+    with col3:
+        st.metric("Verified Questions", f"{total_verified:,}")
+    with col4:
+        st.metric("Overall Progress", f"{completion_rate:.1f}%")
+    
+    st.divider()
+    
+    # Collections table with enhanced info
+    st.markdown("**📊 Collection Details**")
+    
+    for subject, total_count in available_subjects.items():
+        verified_count = db_service.get_verified_count(subject)
+        progress = (verified_count / total_count * 100) if total_count > 0 else 0
+        remaining = total_count - verified_count
         
-        if not verified_found:
-            st.info("No verified collections found")
+        with st.expander(f"📚 {subject.title()} Collection", expanded=True):
+            col1, col2 = st.columns([2, 1])
+            
+            with col1:
+                # Progress bar
+                st.progress(progress / 100, text=f"Progress: {progress:.1f}%")
+                
+                # Stats row
+                stat_col1, stat_col2, stat_col3 = st.columns(3)
+                with stat_col1:
+                    st.metric("Total", f"{total_count:,}")
+                with stat_col2:
+                    st.metric("Verified", f"{verified_count:,}")
+                with stat_col3:
+                    st.metric("Remaining", f"{remaining:,}")
+            
+            with col2:
+                # Status indicator
+                if progress >= 100:
+                    st.success("✅ Complete")
+                elif progress >= 75:
+                    st.info("🟡 Near Complete")
+                elif progress >= 25:
+                    st.warning("🟠 In Progress")
+                else:
+                    st.error("🔴 Just Started")
 
 def show_system_settings():
     """Display system configuration settings."""
