@@ -256,13 +256,17 @@ class DatabaseService:
         )
     
     def get_intern_stats(self, intern_id):
-        """Get intern performance statistics from categorized activities."""
+        """Get intern performance statistics by counting unique verified questions."""
         audit_collection = get_collection("audit_collection")
         
         intern_doc = audit_collection.find_one({"intern_id": intern_id})
         result = {"verified": 0, "modified": 0, "reverified": 0, "remodified": 0}
         
         if intern_doc:
+            # Track unique question IDs for verified/modified vs reverified/remodified
+            verified_modified_qids = set()
+            reverified_remodified_qids = set()
+            
             # Check both old and new activity structures for backward compatibility
             all_activities = []
             
@@ -280,8 +284,18 @@ class DatabaseService:
             
             for activity in all_activities:
                 action = activity.get("action")
-                if action in result:
-                    result[action] += 1
+                qid = activity.get("question_id")
+                
+                if action in ["verified", "modified"] and qid:
+                    verified_modified_qids.add(qid)
+                elif action in ["reverified", "remodified"] and qid:
+                    reverified_remodified_qids.add(qid)
+            
+            # Count unique questions
+            result["verified"] = len([qid for qid in verified_modified_qids if not any(a.get("question_id") == qid and a.get("action") == "modified" for a in all_activities)])
+            result["modified"] = len([qid for qid in verified_modified_qids if any(a.get("question_id") == qid and a.get("action") == "modified" for a in all_activities)])
+            result["reverified"] = len(reverified_remodified_qids)
+            result["remodified"] = 0  # Count remodified separately if needed
         
         return result
     
@@ -333,17 +347,17 @@ class DatabaseService:
         return list(users_collection.find({"role": "intern"}))
     
     def get_top_interns(self, limit=5):
-        """Get top performing interns from categorized audit structure."""
+        """Get top performing interns by counting unique verified questions."""
         audit_collection = get_collection("audit_collection")
         users_collection = get_collection("users")
         
         intern_stats = {}
         
-        # Count from all activity arrays
+        # Count unique questions for each intern
         for intern_doc in audit_collection.find({}):
             intern_id = intern_doc.get("intern_id")
             if intern_id:
-                count = 0
+                unique_questions = set()
                 activity_arrays = [
                     intern_doc.get("activities", []),  # Old structure
                     intern_doc.get("verified_modified_activities", []),
@@ -352,11 +366,14 @@ class DatabaseService:
                 ]
                 
                 for activities in activity_arrays:
-                    count += len([a for a in activities 
-                                if a.get("action") in ["verified", "modified", "reverified", "remodified"]])
+                    for activity in activities:
+                        action = activity.get("action")
+                        qid = activity.get("question_id")
+                        if action in ["verified", "modified"] and qid:
+                            unique_questions.add(qid)
                 
-                if count > 0:
-                    intern_stats[intern_id] = count
+                if unique_questions:
+                    intern_stats[intern_id] = len(unique_questions)
         
         # Sort and limit
         sorted_interns = sorted(intern_stats.items(), key=lambda x: x[1], reverse=True)[:limit]
@@ -467,7 +484,7 @@ class DatabaseService:
         return None
     
     def get_intern_subject_stats(self, intern_id, subject):
-        """Get intern stats for specific subject from categorized audit structure."""
+        """Get intern stats for specific subject by counting unique verified questions."""
         audit_collection = get_collection("audit_collection")
         
         # Get subject code
@@ -478,6 +495,10 @@ class DatabaseService:
         result = {"verified": 0, "modified": 0, "reverified": 0, "remodified": 0}
         
         if intern_doc:
+            # Track unique question IDs for this subject
+            verified_modified_qids = set()
+            reverified_remodified_qids = set()
+            
             # Check all activity arrays
             activity_arrays = [
                 intern_doc.get("activities", []),  # Old structure
@@ -486,13 +507,24 @@ class DatabaseService:
                 intern_doc.get("other_activities", [])
             ]
             
+            all_activities = []
             for activities in activity_arrays:
                 for activity in activities:
                     qid = activity.get("question_id", "")
                     action = activity.get("action")
                     # Check if question ID starts with subject code + M (for MCQ)
-                    if qid.startswith(f"{subject_code}M") and action in result:
-                        result[action] += 1
+                    if qid.startswith(f"{subject_code}M"):
+                        all_activities.append(activity)
+                        if action in ["verified", "modified"]:
+                            verified_modified_qids.add(qid)
+                        elif action in ["reverified", "remodified"]:
+                            reverified_remodified_qids.add(qid)
+            
+            # Count unique questions for this subject
+            result["verified"] = len([qid for qid in verified_modified_qids if not any(a.get("question_id") == qid and a.get("action") == "modified" for a in all_activities)])
+            result["modified"] = len([qid for qid in verified_modified_qids if any(a.get("question_id") == qid and a.get("action") == "modified" for a in all_activities)])
+            result["reverified"] = len(reverified_remodified_qids)
+            result["remodified"] = 0  # Count remodified separately if needed
         
         return result
     
@@ -697,3 +729,147 @@ class DatabaseService:
             }, None
         
         return None, "Failed to create user"
+    
+
+
+    def get_last_activity(self, intern_id, subject):
+        """Get last activity timestamp for subject by sorting all activities by timestamp."""
+        audit_collection = get_collection("audit_collection")
+        intern_doc = audit_collection.find_one({"intern_id": intern_id})
+        
+        if not intern_doc:
+            return None
+        
+        # Get subject code
+        subject_code = next((k for k, v in SUBJECTS.items() if v == subject), "XX")
+        
+        activity_arrays = [
+            intern_doc.get("verified_modified_activities", []),
+            intern_doc.get("reverified_remodified_activities", [])
+        ]
+        
+        # Collect all activities for this subject
+        subject_activities = []
+        
+        for activities in activity_arrays:
+            for activity in activities:
+                qid = activity.get("question_id", "")
+                timestamp = activity.get("timestamp")
+                
+                # Check if it's for this subject
+                if qid.startswith(f"{subject_code}M") and timestamp:
+                    subject_activities.append(activity)
+        
+        # Sort by timestamp and get last
+        if not subject_activities:
+            return None
+        
+        subject_activities.sort(key=lambda x: x.get("timestamp"))
+        latest_activity = subject_activities[-1]
+        latest_utc_timestamp = latest_activity.get("timestamp")
+        
+        if latest_utc_timestamp:
+            from datetime import timezone, timedelta
+            
+            # IST timezone (UTC + 5:30)
+            ist_timezone = timezone(timedelta(hours=5, minutes=30))
+            
+            # Convert UTC DB timestamp to IST
+            latest_utc_timestamp = latest_utc_timestamp.replace(tzinfo=timezone.utc)
+            latest_ist_timestamp = latest_utc_timestamp.astimezone(ist_timezone)
+            
+            # Get current IST time
+            current_ist_time = datetime.now(ist_timezone)
+            
+            # Calculate difference in IST
+            delta = current_ist_time - latest_ist_timestamp
+            
+            if delta.days > 0:
+                return f"{delta.days}d ago"
+            elif delta.seconds > 3600:
+                return f"{delta.seconds // 3600}h ago"
+            else:
+                return f"{delta.seconds // 60}m ago"
+        
+        return None
+    
+    def get_daily_average(self, intern_id, subject):
+        """Calculate daily average questions for subject."""
+        audit_collection = get_collection("audit_collection")
+        intern_doc = audit_collection.find_one({"intern_id": intern_id})
+        
+        if not intern_doc:
+            return 0.0
+        
+        # Get subject code
+        subject_code = next((k for k, v in SUBJECTS.items() if v == subject), "XX")
+        
+        # Get first activity date for this subject
+        first_date = None
+        activity_arrays = [
+            intern_doc.get("activities", []),
+            intern_doc.get("verified_modified_activities", []),
+            intern_doc.get("reverified_remodified_activities", []),
+            intern_doc.get("other_activities", [])
+        ]
+        
+        subject_activities = []
+        for activities in activity_arrays:
+            for activity in activities:
+                qid = activity.get("question_id", "")
+                if qid.startswith(f"{subject_code}M") and activity.get("action") in ["verified", "modified"]:
+                    subject_activities.append(activity)
+                    timestamp = activity.get("timestamp")
+                    if timestamp and (not first_date or timestamp < first_date):
+                        first_date = timestamp
+        
+        if not first_date or not subject_activities:
+            return 0.0
+        
+        # Calculate days since first activity
+        days_active = max(1, (datetime.now() - first_date).days + 1)
+        unique_questions = len(set(a.get("question_id") for a in subject_activities))
+        
+        return unique_questions / days_active
+    
+    def get_questions_today(self, intern_id, subject):
+        """Get questions completed today for subject or all subjects if subject is None."""
+        audit_collection = get_collection("audit_collection")
+        intern_doc = audit_collection.find_one({"intern_id": intern_id})
+        
+        if not intern_doc:
+            return 0
+        
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_questions = set()
+        
+        activity_arrays = [
+            intern_doc.get("activities", []),
+            intern_doc.get("verified_modified_activities", []),
+            intern_doc.get("reverified_remodified_activities", []),
+            intern_doc.get("other_activities", [])
+        ]
+        
+        for activities in activity_arrays:
+            for activity in activities:
+                qid = activity.get("question_id", "")
+                timestamp = activity.get("timestamp")
+                action = activity.get("action")
+                
+                # If subject is None, count all subjects; otherwise filter by subject
+                if subject is None:
+                    # Count all questions for today
+                    if (timestamp and timestamp >= today and 
+                        action in ["verified", "modified"] and qid):
+                        today_questions.add(qid)
+                else:
+                    # Get subject code and filter
+                    subject_code = next((k for k, v in SUBJECTS.items() if v == subject), "XX")
+                    if (qid.startswith(f"{subject_code}M") and 
+                        timestamp and timestamp >= today and 
+                        action in ["verified", "modified"]):
+                        today_questions.add(qid)
+        
+        return len(today_questions)
+    
+    
