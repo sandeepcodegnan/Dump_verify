@@ -641,10 +641,10 @@ def show_day_verification_interface(db_service, intern_id, subject):
                 )
             
             edited_data = {
-                "Question": question_text,
-                "Options": options,
+                "Question": question_text.strip().replace('\n', ' ').replace('\r', ''),
+                "Options": {k: v.strip().replace('\n', ' ').replace('\r', '') for k, v in options.items()},
                 "Correct_Option": correct_option,
-                "Explanation": explanation
+                "Explanation": explanation.strip().replace('\n', ' ').replace('\r', '')
             }
             
             # Include Image_URL in edited data for questions with existing Image_URL OR aptitude questions
@@ -705,7 +705,8 @@ def show_day_verification_interface(db_service, intern_id, subject):
                                     del st.session_state[edit_mode_key]
                                 st.rerun()
                             else:
-                                st.error("❌ Verification failed")
+                                st.error("❌ Verification failed - database error")
+                                st.error(f"Debug: Question ID: {question['_id']}, Changes: {list(changes.keys())}")
                     else:
                         st.warning("⚠️ No changes detected.")
         
@@ -742,17 +743,24 @@ def show_day_verification_interface(db_service, intern_id, subject):
             else:
                 if st.button("✅ Verify", type="primary", key=f"verify_{question['_id']}", disabled=already_processed):
                     with st.spinner("Verifying question..."):
-                        success = db_service.verify_question(
-                            str(question['_id']), 
-                            intern_id, 
-                            "verified"
-                        )
-                        if success:
-                            st.success("✅ Question verified!")
-                            st.session_state[session_key] = min(st.session_state[session_key] + 1, len(questions))
-                            st.rerun()
-                        else:
-                            st.error("❌ Verification failed")
+                        try:
+                            success = db_service.verify_question(
+                                str(question['_id']), 
+                                intern_id, 
+                                "verified"
+                            )
+                            if success:
+                                st.success("✅ Question verified!")
+                                st.session_state[session_key] = min(st.session_state[session_key] + 1, len(questions))
+                                st.rerun()
+                            else:
+                                if already_processed:
+                                    st.warning("⚠️ Question already verified")
+                                else:
+                                    st.error("❌ Verification failed - database error")
+                                    st.error(f"Debug: Question ID: {question['_id']}, Subject: {subject}")
+                        except Exception as e:
+                            st.error(f"❌ Error: {str(e)}")
         
         with col2:
             if reverify_mode:

@@ -2,10 +2,11 @@
 
 # Subject codes for Q_id generation (MCQ collections)
 SUBJECTS = {
-    "PY": "python", "MY": "mysql", "JV": "java", "JS": "javascript",
+    "PY": "python", "MS": "mysql", "JV": "java", "JS": "javascript",
     "RJ": "react", "NJ": "nodejs", "MG": "mongodb", "FL": "flask",
     "ML": "machinelearning", "DL": "deeplearning", "DS": "dsa",
-    "DV": "devops", "AP": "aptitude", "SS": "softskills"
+    "DV": "devops", "AP": "aptitude", "SS": "softskills","AJV": "advancedjava",
+    "DA": "dataanalytics","FE": "frontend",
 }
 
 # Question types (MCQ only)

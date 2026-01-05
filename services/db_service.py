@@ -118,14 +118,17 @@ class DatabaseService:
                     return False, "Question not verified yet"
                 
                 # Update with changes but keep existing Q_id
+                cleaned_changes = None
                 if changes:
+                    # Clean up changes data
+                    cleaned_changes = self._clean_text_data(changes)
                     source_collection.update_one(
                         {"_id": ObjectId(question_id)},
-                        {"$set": changes}
+                        {"$set": cleaned_changes}
                     )
                 
                 # Log audit with existing Q_id - ensure Q_id is preserved
-                self._log_audit(existing_qid, intern_id, action, changes)
+                self._log_audit(existing_qid, intern_id, action, cleaned_changes)
                 
                 return True, "Question re-verified successfully"
         
@@ -178,46 +181,78 @@ class DatabaseService:
         """Verify MCQ question by adding Q_id to existing collection."""
         from bson import ObjectId
         
-        # Find original question in MCQ collections only
-        for subject_key, subject_name in SUBJECTS.items():
-            source_collection = get_collection(f"{subject_name}_mcq")
-            question = source_collection.find_one({"_id": ObjectId(question_id)})
-            
-            if question:
-                # Check if already verified (has Q_id)
-                existing_qid = question.get("Q_id")
-                if existing_qid:
-                    print(f"Question already verified with Q_id: {existing_qid}")
-                    # If it's a modification action, just log the audit with existing Q_id
-                    if action == "modified" and changes:
-                        # Update the question with changes but keep existing Q_id
-                        source_collection.update_one(
+        try:
+            # Find original question in MCQ collections only
+            for subject_key, subject_name in SUBJECTS.items():
+                source_collection = get_collection(f"{subject_name}_mcq")
+                
+                try:
+                    question = source_collection.find_one({"_id": ObjectId(question_id)})
+                    if question:
+                        # Check if already verified (has Q_id)
+                        existing_qid = question.get("Q_id")
+                        if existing_qid:
+                            # If it's a modification action, just log the audit with existing Q_id
+                            if action == "modified" and changes:
+                                # Clean up changes data
+                                cleaned_changes = self._clean_text_data(changes)
+                                # Update the question with changes but keep existing Q_id
+                                source_collection.update_one(
+                                    {"_id": ObjectId(question_id)},
+                                    {"$set": cleaned_changes}
+                                )
+                                self._log_audit(existing_qid, intern_id, action, cleaned_changes)
+                                return True
+                            return False
+                        
+                        # Generate new Q_id only if question doesn't have one
+                        q_id = self.generate_qid(subject_key, "M")
+                        
+                        # Update the existing document with Q_id
+                        update_data = {"Q_id": q_id}
+                        cleaned_changes = None
+                        if changes:
+                            # Clean up changes data
+                            cleaned_changes = self._clean_text_data(changes)
+                            update_data.update(cleaned_changes)
+                        
+                        # Update the question in the same collection
+                        result = source_collection.update_one(
                             {"_id": ObjectId(question_id)},
-                            {"$set": changes}
+                            {"$set": update_data}
                         )
-                        self._log_audit(existing_qid, intern_id, action, changes)
-                        return True
-                    return False
-                
-                # Generate new Q_id only if question doesn't have one
-                q_id = self.generate_qid(subject_key, "M")
-                
-                # Update the existing document with Q_id
-                update_data = {"Q_id": q_id}
-                if changes:
-                    update_data.update(changes)
-                
-                # Update the question in the same collection
-                source_collection.update_one(
-                    {"_id": ObjectId(question_id)},
-                    {"$set": update_data}
-                )
-                
-                # Log audit with the generated Q_id
-                self._log_audit(q_id, intern_id, action, changes)
-                
-                return True
-        return False
+                        
+                        if result.modified_count > 0:
+                            # Log audit with the generated Q_id
+                            self._log_audit(q_id, intern_id, action, cleaned_changes)
+                            return True
+                        else:
+                            return False
+                except Exception:
+                    continue
+            
+            return False
+            
+        except Exception:
+            return False
+    
+    def _clean_text_data(self, data):
+        """Clean text data by removing extra spaces and newlines."""
+        if not data:
+            return data
+        
+        cleaned = {}
+        for key, value in data.items():
+            if isinstance(value, str):
+                # Remove extra spaces and newlines
+                cleaned[key] = value.strip().replace('\n', ' ').replace('\r', '').replace('  ', ' ')
+            elif isinstance(value, dict):
+                # Handle Options dictionary
+                cleaned[key] = {k: v.strip().replace('\n', ' ').replace('\r', '').replace('  ', ' ') if isinstance(v, str) else v for k, v in value.items()}
+            else:
+                cleaned[key] = value
+        
+        return cleaned
     
     def _log_audit(self, question_id, intern_id, action, changes=None):
         """Log audit trail with categorized activities."""
